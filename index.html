@@ -1,1 +1,405 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>Space Miner 4000</title>
+<style>
+  html,body{margin:0;height:100%;background:#050505;color:#f2f2f2;font-family:Arial,Helvetica,sans-serif;overflow:hidden}
+  *{box-sizing:border-box}
+  #wrap{position:fixed;inset:0;display:grid;place-items:center;background:#050505}
+  canvas{width:100vw;height:100vh;display:block;touch-action:none}
+  #touch{position:fixed;inset:0;pointer-events:none}
+  .pad{position:absolute;bottom:18px;display:flex;gap:10px;pointer-events:auto}
+  .left{left:18px}.right{right:18px}
+  button.ctrl{width:58px;height:58px;border-radius:50%;border:2px solid #ddd;background:#111a;color:#fff;font-size:23px;font-weight:700;backdrop-filter:blur(4px)}
+  button.ctrl:active{background:#fff;color:#000}
+  #action{width:76px;height:76px}
+  @media (min-width:900px){#touch{opacity:.18}.pad{bottom:22px}}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game"></canvas></div>
+<div id="touch">
+  <div class="pad left">
+    <button class="ctrl" data-k="ArrowLeft">◀</button>
+    <button class="ctrl" data-k="ArrowRight">▶</button>
+  </div>
+  <div class="pad right">
+    <button class="ctrl" data-k="ArrowUp">▲</button>
+    <button class="ctrl" id="action" data-k="Space">●</button>
+  </div>
+</div>
+<script>
+'use strict';
 
+const c = document.getElementById('game');
+const ctx = c.getContext('2d');
+let W=innerWidth,H=innerHeight,DPR=Math.min(devicePixelRatio||1,2);
+function resize(){
+  W=innerWidth; H=innerHeight; DPR=Math.min(devicePixelRatio||1,2);
+  c.width=W*DPR;c.height=H*DPR;
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+addEventListener('resize',resize); resize();
+
+const keys={};
+addEventListener('keydown',e=>{
+  keys[e.code]=true;
+  if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space'].includes(e.code)) e.preventDefault();
+  if(e.code==='Space') actionPressed=true;
+});
+addEventListener('keyup',e=>keys[e.code]=false);
+let actionPressed=false;
+document.querySelectorAll('[data-k]').forEach(b=>{
+  const code=b.dataset.k;
+  const on=e=>{e.preventDefault();keys[code]=true;if(code==='Space')actionPressed=true};
+  const off=e=>{e.preventDefault();keys[code]=false};
+  b.addEventListener('pointerdown',on);b.addEventListener('pointerup',off);b.addEventListener('pointercancel',off);b.addEventListener('pointerleave',off);
+});
+
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const hit=(a,b)=>a.x<a.x+a.w && false;
+function rectHit(a,b){return a.x < b.x+b.w && a.x+a.w>b.x && a.y<b.y+b.h && a.y+a.h>b.y}
+function circleHit(a,b,r){const dx=a.x-b.x,dy=a.y-b.y;return dx*dx+dy*dy<r*r}
+function line(x1,y1,x2,y2,w=2){ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke()}
+function text(t,x,y,s=18,align='left'){ctx.font='700 '+s+'px Arial';ctx.textAlign=align;ctx.fillText(t,x,y)}
+function mono(alpha=1){ctx.strokeStyle='rgba(245,245,245,'+alpha+')';ctx.fillStyle='rgba(245,245,245,'+alpha+')'}
+
+const planets=[
+ {name:'ASH MOON', tint:'#bfbfbf', gravity:.055, aliens:5, gems:4, fuel:4},
+ {name:'BLUE DUST', tint:'#9bc7ff', gravity:.068, aliens:7, gems:5, fuel:4},
+ {name:'GREEN ROCK', tint:'#a8ddb0', gravity:.078, aliens:9, gems:6, fuel:3},
+ {name:'VIOLET IX', tint:'#d0b1ff', gravity:.088, aliens:11, gems:7, fuel:3},
+ {name:'BIG RED', tint:'#ff5050', gravity:.105, aliens:14, gems:9, fuel:2}
+];
+
+let state='title',planetIndex=0,score=0,high=+(localStorage.SM4000_HI||0),gems=0,banked=0;
+let ship={fuel:100,maxFuel:100,hull:3,laser:1,thrust:1,x:0,y:0,vx:0,vy:0,angle:0};
+let stars=[],asteroids=[],planet={x:0,y:0,r:90}, bullets=[],aliens=[],drops=[],particles=[];
+let cameraX=0, surfaceWidth=2400, landedX=0, msg='', msgT=0, stageTimer=0;
+
+function resetRun(){
+  planetIndex=0;score=0;gems=0;banked=0;
+  ship={fuel:100,maxFuel:100,hull:3,laser:1,thrust:1,x:W*.22,y:H*.5,vx:0,vy:0,angle:0};
+  setupFlight();
+}
+
+function setupFlight(){
+  state='flight'; stageTimer=0; bullets=[];aliens=[];drops=[];particles=[];
+  ship.x=W*.18;ship.y=H*.5;ship.vx=0;ship.vy=0;ship.angle=0;
+  const p=planets[planetIndex];
+  planet={x:W+Math.max(350,W*.55),y:H*.5,r:70+planetIndex*14};
+  stars=Array.from({length:120},()=>({x:rnd(0,W),y:rnd(0,H),s:rnd(.5,2.2)}));
+  asteroids=Array.from({length:10+planetIndex*4},()=>({x:rnd(W*.3,planet.x-120),y:rnd(55,H-55),r:rnd(9,24),v:rnd(.4,1.5)}));
+  msg='REACH '+p.name;msgT=160;
+}
+
+function setupLander(){
+  state='lander';stageTimer=0;bullets=[];drops=[];particles=[];
+  ship.x=W*.5;ship.y=90;ship.vx=rnd(-.5,.5);ship.vy=0;ship.angle=0;
+  landedX=W*.5;
+  msg='LAND SOFTLY';msgT=140;
+}
+
+function terrainY(x){
+  const base=H*.78;
+  return base + Math.sin(x*.012+planetIndex)*20 + Math.sin(x*.028)*10;
+}
+function padY(){return terrainY(W*.5)-8}
+
+function setupSurface(){
+  state='surface';stageTimer=0; bullets=[];aliens=[];drops=[];particles=[];
+  cameraX=0;
+  ship.x=150;ship.y=terrainY(150)-32; ship.vx=0; ship.vy=0;
+  const p=planets[planetIndex];
+  aliens=Array.from({length:p.aliens},(_,i)=>({x:400+i*(surfaceWidth-600)/Math.max(1,p.aliens-1)+rnd(-80,80),y:0,w:26,h:32,hp:1+Math.floor(planetIndex/2),dir:Math.random()<.5?-1:1,t:rnd(0,200)}));
+  drops=[];
+  for(let i=0;i<p.gems;i++) drops.push({type:'gem',x:rnd(320,surfaceWidth-180),y:0,taken:false});
+  for(let i=0;i<p.fuel;i++) drops.push({type:'fuel',x:rnd(320,surfaceWidth-180),y:0,taken:false});
+  drops.push({type:'ship',x:surfaceWidth-130,y:0,taken:false});
+  msg='MINE • REFUEL • RETURN TO SHIP';msgT=180;
+}
+
+function setupUpgrade(){
+  state='upgrade';stageTimer=0;ship.fuel=ship.maxFuel;
+}
+
+function completePlanet(){
+  banked += gems; gems=0; score += 1000 + planetIndex*500;
+  if(planetIndex===planets.length-1){state='win';saveHi();return}
+  setupUpgrade();
+}
+
+function saveHi(){if(score>high){high=score;localStorage.SM4000_HI=high}}
+
+function lose(reason){
+  saveHi();state='gameover';msg=reason||'MISSION LOST';
+}
+
+function burst(x,y,n=12){
+  for(let i=0;i<n;i++) particles.push({x,y,vx:rnd(-2.2,2.2),vy:rnd(-2.2,2.2),life:rnd(20,55)});
+}
+
+function updateFlight(){
+  stageTimer++;
+  const acc=.09*ship.thrust;
+  if(keys.ArrowLeft) ship.vx-=acc;
+  if(keys.ArrowRight) ship.vx+=acc;
+  if(keys.ArrowUp){ship.vy-=acc;ship.fuel-=.035}
+  if(keys.ArrowDown){ship.vy+=acc;ship.fuel-=.02}
+  ship.vx*=.992;ship.vy*=.992;
+  ship.x+=ship.vx;ship.y+=ship.vy;
+  ship.y=clamp(ship.y,25,H-25);ship.x=clamp(ship.x,20,W*.72);
+  planet.x-=1.6+planetIndex*.25;
+  asteroids.forEach(a=>a.x-=a.v+1.4);
+  for(const a of asteroids){
+    if(Math.hypot(ship.x-a.x,ship.y-a.y)<a.r+14){burst(ship.x,ship.y,20);ship.hull--;a.x=-100;score=Math.max(0,score-150);if(ship.hull<=0)lose('SHIP DESTROYED')}
+  }
+  if(ship.fuel<=0) lose('OUT OF FUEL');
+  if(planet.x-planet.r < W*.74) setupLander();
+}
+
+function updateLander(){
+  const g=planets[planetIndex].gravity;
+  ship.vy+=g;
+  if(keys.ArrowLeft){ship.vx-=.035*ship.thrust;ship.fuel-=.022}
+  if(keys.ArrowRight){ship.vx+=.035*ship.thrust;ship.fuel-=.022}
+  if(keys.ArrowUp){ship.vy-=.12*ship.thrust;ship.fuel-=.065}
+  ship.vx*=.997;ship.x+=ship.vx;ship.y+=ship.vy;
+  ship.x=clamp(ship.x,22,W-22);
+  const py=padY();
+  if(ship.y+22>=py){
+    const onPad=Math.abs(ship.x-W*.5)<62;
+    if(onPad && Math.abs(ship.vy)<1.45 && Math.abs(ship.vx)<1.15){
+      score+=500;burst(ship.x,py,18);setupSurface();
+    } else lose(onPad?'TOO FAST':'MISSED LANDING PAD');
+  }
+  if(ship.fuel<=0) lose('OUT OF FUEL');
+}
+
+function updateSurface(){
+  stageTimer++;
+  const speed=2.4+ship.thrust*.2;
+  if(keys.ArrowLeft) ship.x-=speed;
+  if(keys.ArrowRight) ship.x+=speed;
+  ship.x=clamp(ship.x,30,surfaceWidth-30);
+  ship.y=terrainY(ship.x-cameraX)-32;
+  cameraX=clamp(ship.x-W*.35,0,surfaceWidth-W);
+
+  if(actionPressed && bullets.length<4+ship.laser){
+    const dir=keys.ArrowLeft&&!keys.ArrowRight?-1:1;
+    bullets.push({x:ship.x+dir*16,y:ship.y-5,vx:dir*(7+ship.laser*.8),life:70});
+  }
+  actionPressed=false;
+  bullets.forEach(b=>{b.x+=b.vx;b.life--});
+  bullets=bullets.filter(b=>b.life>0 && b.x>cameraX-30 && b.x<cameraX+W+30);
+
+  aliens.forEach(a=>{
+    a.t++; a.y=terrainY(a.x-cameraX)-30;
+    if(Math.abs(a.x-ship.x)<230) a.dir=a.x<ship.x?1:-1;
+    a.x+=a.dir*(.45+planetIndex*.08);
+    if(a.t%(120-planetIndex*10|0)===0 && Math.abs(a.x-ship.x)<420){
+      bullets.push({enemy:true,x:a.x,y:a.y-8,vx:(ship.x<a.x?-1:1)*(2.4+planetIndex*.3),life:180});
+    }
+  });
+
+  for(const b of bullets){
+    if(b.enemy){
+      if(Math.abs(b.x-ship.x)<16 && Math.abs(b.y-ship.y)<24){
+        b.life=0;ship.hull--;burst(ship.x-cameraX,ship.y,15);if(ship.hull<=0)lose('SUIT BREACHED');
+      }
+    }else{
+      for(const a of aliens){
+        if(a.hp>0 && Math.abs(b.x-a.x)<18 && Math.abs(b.y-a.y)<22){a.hp-=ship.laser;b.life=0;score+=100;if(a.hp<=0){burst(a.x-cameraX,a.y,12);score+=150}}
+      }
+    }
+  }
+  aliens=aliens.filter(a=>a.hp>0);
+
+  for(const d of drops){
+    if(d.taken||d.type==='ship')continue;
+    d.y=terrainY(d.x-cameraX)-18;
+    if(Math.abs(d.x-ship.x)<24){
+      d.taken=true;
+      if(d.type==='gem'){gems++;score+=200;msg='+ GEM';msgT=45}
+      if(d.type==='fuel'){ship.fuel=Math.min(ship.maxFuel,ship.fuel+22);score+=80;msg='+ FUEL';msgT=45}
+    }
+  }
+  const exit=drops.find(d=>d.type==='ship');
+  if(exit){
+    exit.y=terrainY(exit.x-cameraX)-34;
+    if(Math.abs(exit.x-ship.x)<42){
+      if(aliens.length===0 || gems>=2){completePlanet();}
+      else {msg='CLEAR MORE ALIENS / FIND GEMS';msgT=80}
+    }
+  }
+  ship.fuel-=.0035;
+  if(ship.fuel<=0) lose('OUT OF FUEL');
+}
+
+function buy(type){
+  if(type==='fuel' && banked>=2){banked-=2;ship.maxFuel+=20;ship.fuel=ship.maxFuel;score+=100}
+  if(type==='laser' && banked>=3){banked-=3;ship.laser=Math.min(4,ship.laser+1);score+=150}
+  if(type==='thrust' && banked>=3){banked-=3;ship.thrust=Math.min(3,ship.thrust+.35);score+=150}
+  if(type==='hull' && banked>=2){banked-=2;ship.hull=Math.min(5,ship.hull+1);score+=100}
+}
+
+c.addEventListener('pointerdown',e=>{
+  const x=e.clientX,y=e.clientY;
+  if(state==='title'){resetRun();return}
+  if(state==='gameover'||state==='win'){resetRun();return}
+  if(state==='upgrade'){
+    const bw=Math.min(330,W*.78), bx=(W-bw)/2;
+    const rows=[
+      {y:H*.36,type:'fuel',cost:2},
+      {y:H*.46,type:'laser',cost:3},
+      {y:H*.56,type:'thrust',cost:3},
+      {y:H*.66,type:'hull',cost:2}
+    ];
+    for(const r of rows) if(x>bx&&x<bx+bw&&y>r.y-28&&y<r.y+28) buy(r.type);
+    if(y>H*.78){planetIndex++;setupFlight()}
+  }
+});
+
+function drawShip(x,y,s=1){
+  ctx.save();ctx.translate(x,y);ctx.scale(s,s);mono();
+  ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(0,-18);ctx.lineTo(12,10);ctx.lineTo(7,9);ctx.lineTo(10,18);ctx.lineTo(2,13);ctx.lineTo(0,21);ctx.lineTo(-2,13);ctx.lineTo(-10,18);ctx.lineTo(-7,9);ctx.lineTo(-12,10);ctx.closePath();ctx.stroke();
+  ctx.beginPath();ctx.arc(0,-5,4,0,Math.PI*2);ctx.stroke();
+  if(keys.ArrowUp){ctx.beginPath();ctx.moveTo(-4,17);ctx.lineTo(0,30+rnd(0,7));ctx.lineTo(4,17);ctx.stroke()}
+  ctx.restore();
+}
+
+function drawAstronaut(x,y){
+  ctx.save();ctx.translate(x,y);mono();ctx.lineWidth=2;
+  ctx.strokeRect(-7,-15,14,18);ctx.beginPath();ctx.arc(0,-21,8,0,Math.PI*2);ctx.stroke();
+  line(-6,3,-9,14);line(6,3,9,14);line(-7,-8,-13,-1);line(7,-8,13,-1);
+  ctx.restore();
+}
+
+function drawAlien(x,y){
+  ctx.save();ctx.translate(x,y);mono();ctx.lineWidth=2;
+  ctx.beginPath();ctx.arc(0,-12,9,Math.PI,0);ctx.lineTo(9,2);ctx.lineTo(-9,2);ctx.closePath();ctx.stroke();
+  ctx.fillRect(-4,-12,2,2);ctx.fillRect(2,-12,2,2);line(-7,2,-11,12);line(7,2,11,12);line(-4,2,-5,13);line(4,2,5,13);
+  ctx.restore();
+}
+
+function drawHUD(){
+  mono(.95);ctx.globalAlpha=1;
+  ctx.fillStyle='#090909aa';ctx.fillRect(10,10,Math.min(560,W-20),54);
+  mono();text('SPACE MINER 4000',22,32,15);
+  text('SCORE '+score,22,53,15);
+  text('FUEL '+Math.max(0,ship.fuel|0)+'/'+ship.maxFuel,170,53,15);
+  text('GEMS '+(gems+banked),330,53,15);
+  text('HULL '+ship.hull,440,53,15);
+}
+
+function drawFlight(){
+  ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);mono(.7);
+  stars.forEach(s=>{ctx.globalAlpha=.35+s.s*.2;ctx.fillRect((s.x-stageTimer*s.s*.08+W)%W,s.y,s.s,s.s)});ctx.globalAlpha=1;
+  asteroids.forEach(a=>{mono(.6);ctx.beginPath();ctx.arc(a.x,a.y,a.r,0,Math.PI*2);ctx.stroke();line(a.x-a.r*.5,a.y-3,a.x+3,a.y-a.r*.45,1)});
+  const p=planets[planetIndex];
+  ctx.strokeStyle=p.tint;ctx.fillStyle='#080808';ctx.lineWidth=3;ctx.beginPath();ctx.arc(planet.x,planet.y,planet.r,0,Math.PI*2);ctx.fill();ctx.stroke();
+  ctx.globalAlpha=.35;ctx.strokeStyle=p.tint;ctx.beginPath();ctx.arc(planet.x-planet.r*.2,planet.y-planet.r*.1,planet.r*.28,0,Math.PI*2);ctx.stroke();ctx.globalAlpha=1;
+  drawShip(ship.x,ship.y,1);
+  drawHUD();
+  mono();text('FLY',W/2,96,18,'center');text(p.name,W/2,122,13,'center');
+}
+
+function drawLander(){
+  ctx.fillStyle='#060606';ctx.fillRect(0,0,W,H);
+  const p=planets[planetIndex];ctx.strokeStyle=p.tint;ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(0,terrainY(0));for(let x=0;x<=W;x+=12)ctx.lineTo(x,terrainY(x));ctx.stroke();
+  ctx.fillStyle='#0c0c0c';ctx.fillRect(0,terrainY(W*.5),W,H);
+  mono();ctx.fillRect(W*.5-62,padY(),124,7);line(W*.5-55,padY()+7,W*.5-45,padY()+18);line(W*.5+55,padY()+7,W*.5+45,padY()+18);
+  drawShip(ship.x,ship.y,1.1);
+  drawHUD();mono();text('LANDER',W/2,96,18,'center');text('V '+ship.vy.toFixed(2)+'   H '+Math.abs(ship.vx).toFixed(2),W/2,122,13,'center');
+}
+
+function drawSurface(){
+  ctx.fillStyle='#060606';ctx.fillRect(0,0,W,H);
+  const p=planets[planetIndex];
+  ctx.strokeStyle=p.tint;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(0,terrainY(0));for(let x=0;x<=W;x+=12)ctx.lineTo(x,terrainY(x));ctx.stroke();
+  ctx.fillStyle='#0b0b0b';ctx.lineTo(W,H);ctx.lineTo(0,H);ctx.fill();
+  for(let i=0;i<10;i++){const x=(i*260-cameraX*.35)%(W+260)-100;mono(.22);ctx.beginPath();ctx.arc(x,H*.54,50+(i%3)*18,Math.PI,0);ctx.stroke()}
+  drops.forEach(d=>{
+    if(d.taken)return;
+    const x=d.x-cameraX;d.y=terrainY(x)-(d.type==='ship'?34:18);
+    if(d.type==='gem'){ctx.strokeStyle=p.tint;ctx.beginPath();ctx.moveTo(x,d.y-10);ctx.lineTo(x+8,d.y);ctx.lineTo(x,d.y+10);ctx.lineTo(x-8,d.y);ctx.closePath();ctx.stroke()}
+    if(d.type==='fuel'){mono();ctx.strokeRect(x-8,d.y-10,16,20);text('F',x,d.y+5,11,'center')}
+    if(d.type==='ship')drawShip(x,d.y,1.6);
+  });
+  aliens.forEach(a=>drawAlien(a.x-cameraX,a.y));
+  bullets.forEach(b=>{mono();ctx.fillRect(b.x-cameraX,b.y,b.enemy?5:9,2)});
+  drawAstronaut(ship.x-cameraX,ship.y);
+  particles.forEach(pt=>{mono(pt.life/55);ctx.fillRect(pt.x,pt.y,2,2)});
+  drawHUD();mono();text('PLANET '+(planetIndex+1)+' / '+planets.length+' — '+p.name,W/2,96,15,'center');
+}
+
+function drawUpgrade(){
+  ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);mono();
+  text('SHIP UPGRADE',W/2,H*.18,32,'center');text('BANKED GEMS: '+banked,W/2,H*.245,18,'center');
+  const bw=Math.min(330,W*.78),bx=(W-bw)/2;
+  const rows=[
+    ['FUEL TANK +20','2 GEMS',H*.36],
+    ['LASER POWER +1','3 GEMS',H*.46],
+    ['THRUST +','3 GEMS',H*.56],
+    ['REPAIR HULL +1','2 GEMS',H*.66]
+  ];
+  rows.forEach(r=>{ctx.strokeStyle='#eee';ctx.strokeRect(bx,r[2]-28,bw,56);text(r[0],bx+16,r[2]+5,16);text(r[1],bx+bw-16,r[2]+5,14,'right')});
+  text('TAP BELOW TO LAUNCH TO '+planets[planetIndex+1].name,W/2,H*.82,16,'center');
+  line(W*.3,H*.85,W*.7,H*.85,2);
+}
+
+function drawTitle(){
+  ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);mono();
+  for(let i=0;i<80;i++){const x=(i*97)%W,y=(i*53)%H;ctx.globalAlpha=.15+(i%5)*.08;ctx.fillRect(x,y,1+(i%2),1+(i%2))}ctx.globalAlpha=1;
+  text('SPACE',W/2,H*.28,Math.min(70,W*.15),'center');
+  text('MINER 4000',W/2,H*.40,Math.min(70,W*.15),'center');
+  ctx.strokeStyle='#ff5050';line(W*.23,H*.44,W*.77,H*.44,3);
+  text('FLY • LAND • MINE • UPGRADE',W/2,H*.52,17,'center');
+  text('ARROWS / TOUCH TO MOVE',W/2,H*.60,14,'center');
+  text('SPACE / ● TO FIRE',W/2,H*.64,14,'center');
+  text('TAP TO LAUNCH',W/2,H*.75,21,'center');
+  text('HIGH SCORE '+high,W/2,H*.82,13,'center');
+}
+
+function drawEnd(win){
+  ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);mono();
+  text(win?'BIG RED CONQUERED':'MISSION LOST',W/2,H*.34,34,'center');
+  text('SCORE '+score,W/2,H*.47,26,'center');
+  text('HIGH SCORE '+Math.max(high,score),W/2,H*.54,18,'center');
+  text(win?'SPACE MINER STATUS: LEGEND':'TAP TO TRY AGAIN',W/2,H*.68,18,'center');
+  if(win) text('TAP TO PLAY AGAIN',W/2,H*.75,16,'center');
+}
+
+function drawMessage(){
+  if(msgT<=0)return;msgT--;ctx.globalAlpha=Math.min(1,msgT/20);ctx.fillStyle='#000c';ctx.fillRect(W*.2,H*.15,W*.6,44);mono();text(msg,W/2,H*.15+29,15,'center');ctx.globalAlpha=1;
+}
+
+let last=0;
+function loop(t){
+  const dt=Math.min(2,(t-last)/16.67||1);last=t;
+  if(state==='flight')updateFlight();
+  else if(state==='lander')updateLander();
+  else if(state==='surface')updateSurface();
+
+  particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vx*=.98;p.vy*=.98;p.life--});particles=particles.filter(p=>p.life>0);
+
+  if(state==='title')drawTitle();
+  else if(state==='flight')drawFlight();
+  else if(state==='lander')drawLander();
+  else if(state==='surface')drawSurface();
+  else if(state==='upgrade')drawUpgrade();
+  else if(state==='gameover')drawEnd(false);
+  else if(state==='win')drawEnd(true);
+  if(!['title','gameover','win','upgrade'].includes(state))drawMessage();
+  actionPressed=false;
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
