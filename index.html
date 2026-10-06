@@ -33,7 +33,7 @@
 <script>
 'use strict';
 
-const VERSION='v0.6.2';
+const VERSION='v0.7.0';
 const c = document.getElementById('game');
 const ctx = c.getContext('2d');
 
@@ -113,9 +113,10 @@ const planets=[
 
 let state='title',planetIndex=0,score=0,high=+(localStorage.SM4000_HI||0),gems=0,banked=0;
 let ship={fuel:100,maxFuel:100,hull:3,laser:1,thrust:1,x:0,y:0,vx:0,vy:0,angle:0,av:0,grounded:false};
-let stars=[],shootingStars=[],asteroids=[],planet={x:0,y:0,r:90}, bullets=[],aliens=[],drops=[],particles=[];
+let stars=[],shootingStars=[],asteroids=[],gasRings=[],planet={x:0,y:0,r:90}, bullets=[],aliens=[],drops=[],particles=[];
 let cameraX=0, surfaceWidth=2400, landedX=0, msg='', msgT=0, stageTimer=0, deathReason='';
 let debris=[], explosionTimer=0, explosionScene='';
+let takeoffAlt=0,takeoffV=0,takeoffHitCooldown=0,cavernHeight=2200;
 
 function resetRun(){
   planetIndex=0;score=0;gems=0;banked=0;
@@ -129,6 +130,10 @@ function setupFlight(){
   const p=planets[planetIndex];
   planet={x:W+Math.max(350,W*.55),y:H*.5,r:70+planetIndex*14};
   stars=Array.from({length:120},()=>({x:rnd(0,W),y:rnd(0,H),s:rnd(.5,2.2)}));
+  gasRings=Array.from({length:3+Math.floor(Math.random()*3)},()=>({
+    x:rnd(W*.65,planet.x-160),y:rnd(85,H-85),r:rnd(18,30),vx:rnd(-.25,.18),taken:false,
+    wobble:rnd(0,Math.PI*2)
+  }));
   asteroids=Array.from({length:10+planetIndex*4},()=>{
     const r=rnd(13,30);
     return {
@@ -176,7 +181,25 @@ function setupSurface(){
 }
 
 function setupUpgrade(){
-  state='upgrade';stageTimer=0;ship.fuel=ship.maxFuel;
+  state='upgrade';stageTimer=0;
+}
+
+function cavernBounds(alt){
+  const t=clamp(alt/cavernHeight,0,1);
+  const center=W*.5 + Math.sin(alt*.0045+planetIndex)*W*.12 + Math.sin(alt*.011)*W*.045;
+  const pinch=Math.sin(alt*.022+1.7)*18 + Math.sin(alt*.049)*9;
+  const half=clamp(W*(.23-t*.035)+pinch,105,Math.min(250,W*.29));
+  // Jagged teeth make the cavern feel carved and spiky.
+  const toothL=Math.max(0,Math.sin(alt*.075))*16;
+  const toothR=Math.max(0,Math.sin(alt*.071+2.2))*16;
+  return {left:center-half+toothL,right:center+half-toothR};
+}
+
+function setupTakeoff(){
+  state='takeoff';stageTimer=0;bullets=[];asteroids=[];gasRings=[];particles=[];
+  takeoffAlt=0;takeoffV=0;takeoffHitCooldown=0;
+  ship.x=W*.5;ship.y=H*.68;ship.vx=0;ship.vy=0;ship.angle=0;ship.av=0;
+  msg='ESCAPE THE CAVERN — YOUR COLLECTED FUEL IS ALL YOU HAVE';msgT=210;
 }
 
 function completePlanet(){
@@ -225,7 +248,7 @@ function startShipExplosion(reason){
 }
 
 function lose(reason,shipBoom=false){
-  if(shipBoom && (state==='flight'||state==='lander')){
+  if(shipBoom && (state==='flight'||state==='lander'||state==='takeoff')){
     startShipExplosion(reason);
     return;
   }
@@ -288,6 +311,25 @@ function updateFlight(){
   }
   bullets=bullets.filter(b=>b.mode!=='space'||(b.life>0&&b.x>-50&&b.x<W+100&&b.y>-50&&b.y<H+50));
 
+  gasRings.forEach(g=>{
+    g.x+=g.vx-1.05;
+    g.wobble+=.025;
+    if(!g.taken && Math.hypot(ship.x-g.x,ship.y-g.y)<g.r+15){
+      g.taken=true;
+      ship.fuel=Math.min(ship.maxFuel,ship.fuel+1);
+      score+=25;sfx('fuel');msg='+1 FUEL — GAS RING';msgT=55;
+    }
+  });
+  gasRings=gasRings.filter(g=>!g.taken && g.x>-80);
+
+  gasRings.forEach(g=>{
+    ctx.save();ctx.translate(g.x,g.y);ctx.rotate(Math.sin(g.wobble)*.12);
+    ctx.strokeStyle='rgba(220,245,245,.58)';ctx.lineWidth=3;
+    ctx.beginPath();ctx.ellipse(0,0,g.r,g.r*.58,0,0,Math.PI*2);ctx.stroke();
+    ctx.globalAlpha=.28;ctx.lineWidth=7;
+    ctx.beginPath();ctx.ellipse(0,0,g.r*.72,g.r*.42,0,0,Math.PI*2);ctx.stroke();
+    ctx.restore();ctx.globalAlpha=1;
+  });
   asteroids.forEach(a=>{a.x+=a.vx-1.25;a.y+=a.vy;a.rot+=a.spin});
 
   // Asteroid-to-asteroid elastic collisions.
@@ -344,6 +386,60 @@ function updateFlight(){
   const visibleR=planet.r*(1+approach*1.35);
   const distToPlanet=Math.hypot(ship.x-planet.x,ship.y-planet.y);
   if((planet.x-visibleR < W*.60 && distToPlanet < visibleR+W*.38) || planet.x < W*.42) setupLander();
+}
+
+function updateTakeoff(){
+  stageTimer++;
+  if(takeoffHitCooldown>0) takeoffHitCooldown--;
+
+  const gravity=.0055+planetIndex*.00045;
+  takeoffV-=gravity;
+
+  const torque=.0016;
+  if(keys.ArrowLeft) ship.av-=torque;
+  if(keys.ArrowRight) ship.av+=torque;
+  ship.av+=-Math.sin(ship.angle)*.00065;
+  ship.av*=.989;
+  ship.angle+=ship.av;
+
+  if(keys.ArrowUp && ship.fuel>0){
+    const power=.0165*ship.thrust;
+    ship.vx+=Math.sin(ship.angle)*power;
+    takeoffV+=Math.cos(ship.angle)*power;
+    ship.fuel-=.035;
+    const now=performance.now();
+    if(now-lastThrustSound>110){sfx('thrust');lastThrustSound=now}
+  }
+
+  ship.vx*=.992;
+  takeoffV*=.999;
+  ship.x+=ship.vx;
+  takeoffAlt+=takeoffV;
+  if(takeoffAlt<0){takeoffAlt=0;takeoffV=Math.max(0,takeoffV)}
+  ship.y=H*.66;
+
+  const b=cavernBounds(takeoffAlt);
+  const margin=15;
+  if(takeoffHitCooldown===0 && (ship.x-margin<b.left || ship.x+margin>b.right)){
+    ship.hull--;takeoffHitCooldown=42;sfx('hit');
+    burst(ship.x,ship.y,18);
+    const mid=(b.left+b.right)/2;
+    ship.vx+=(mid-ship.x)*.035;
+    takeoffV*=.6;
+    msg='CAVERN IMPACT — HULL '+ship.hull;msgT=75;
+    if(ship.hull<=0){lose('HULL DESTROYED — CAVERN IMPACT');return}
+  }
+
+  if(ship.fuel<=0 && takeoffAlt<cavernHeight*.92 && takeoffV<=0){
+    lose('OUT OF FUEL — TRAPPED IN THE CAVERN');
+    return;
+  }
+
+  if(takeoffAlt>=cavernHeight){
+    score+=600;
+    planetIndex++;
+    setupFlight();
+  }
 }
 
 function updateLander(){
@@ -506,7 +602,7 @@ c.addEventListener('pointerdown',e=>{
       {y:H*.73,type:'hull',cost:2}
     ];
     for(const r of rows) if(x>bx&&x<bx+bw&&y>r.y-28&&y<r.y+28) buy(r.type);
-    if(y>H*.84){planetIndex++;setupFlight()}
+    if(y>H*.84){setupTakeoff()}
   }
 });
 
@@ -648,6 +744,50 @@ function drawFlight(){
   mono();text('FLY',W/2,96,18,'center');text(p.name,W/2,122,13,'center');
 }
 
+function drawTakeoff(){
+  ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);
+
+  const p=planets[planetIndex];
+  ctx.fillStyle='#111';
+  ctx.strokeStyle=p.tint;ctx.lineWidth=2;
+
+  const shipScreenY=H*.66;
+  const step=18;
+  const leftPts=[],rightPts=[];
+  for(let sy=-30;sy<=H+30;sy+=step){
+    const alt=takeoffAlt + (shipScreenY-sy)*4.1;
+    const b=cavernBounds(alt);
+    leftPts.push([b.left,sy]);rightPts.push([b.right,sy]);
+  }
+
+  ctx.beginPath();ctx.moveTo(0,0);
+  leftPts.forEach(pt=>ctx.lineTo(pt[0],pt[1]));
+  ctx.lineTo(0,H);ctx.closePath();ctx.fill();
+  ctx.beginPath();ctx.moveTo(W,0);
+  rightPts.forEach(pt=>ctx.lineTo(pt[0],pt[1]));
+  ctx.lineTo(W,H);ctx.closePath();ctx.fill();
+
+  ctx.strokeStyle=p.tint;
+  ctx.beginPath();leftPts.forEach((pt,i)=>i?ctx.lineTo(pt[0],pt[1]):ctx.moveTo(pt[0],pt[1]));ctx.stroke();
+  ctx.beginPath();rightPts.forEach((pt,i)=>i?ctx.lineTo(pt[0],pt[1]):ctx.moveTo(pt[0],pt[1]));ctx.stroke();
+
+  // Extra triangular teeth along both walls.
+  mono(.7);
+  for(let i=2;i<leftPts.length-2;i+=3){
+    const l=leftPts[i],r=rightPts[i];
+    const tooth=10+((i*7+planetIndex*3)%14);
+    ctx.beginPath();ctx.moveTo(l[0],l[1]-8);ctx.lineTo(l[0]+tooth,l[1]);ctx.lineTo(l[0],l[1]+8);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(r[0],r[1]-8);ctx.lineTo(r[0]-tooth,r[1]);ctx.lineTo(r[0],r[1]+8);ctx.stroke();
+  }
+
+  drawShip(ship.x,shipScreenY,1.05,ship.angle,keys.ArrowUp,keys.ArrowLeft,keys.ArrowRight,true);
+  drawHUD();
+  mono();
+  text('PLANET ESCAPE',W/2,96,18,'center');
+  text('ALT '+Math.min(100,Math.floor(takeoffAlt/cavernHeight*100))+'%   V '+takeoffV.toFixed(2),W/2,122,13,'center');
+  text('NAVIGATE THE SPIKES • CONSERVE FUEL',W/2,145,12,'center');
+}
+
 function drawLander(){
   ctx.fillStyle='#060606';ctx.fillRect(0,0,W,H);
   const p=planets[planetIndex];ctx.strokeStyle=p.tint;ctx.lineWidth=2;
@@ -723,7 +863,7 @@ function drawUpgrade(){
     }
   });
 
-  text('TAP BELOW TO LAUNCH TO '+planets[planetIndex+1].name,W/2,H*.88,16,'center');
+  text('TAP BELOW TO TAKE OFF — NEXT: '+planets[planetIndex+1].name,W/2,H*.88,16,'center');
   line(W*.3,H*.91,W*.7,H*.91,2);
   ctx.globalAlpha=.65;text(VERSION,W-18,H-18,12,'right');ctx.globalAlpha=1;
 }
@@ -739,7 +879,7 @@ function drawTitle(){
   text('SPACE',W/2,H*.28,Math.min(70,W*.15),'center');
   text('MINER 4000',W/2,H*.40,Math.min(70,W*.15),'center');
   ctx.strokeStyle='#ff5050';line(W*.23,H*.44,W*.77,H*.44,3);
-  text('FLY • LAND • MINE • UPGRADE',W/2,H*.52,17,'center');
+  text('FLY • LAND • MINE • UPGRADE • ESCAPE',W/2,H*.52,17,'center');
   text('FLIGHT: LEFT / RIGHT ROTATE • UP THRUST',W/2,H*.59,14,'center');
   text('SURFACE: LEFT / RIGHT MOVE • UP JUMP',W/2,H*.63,14,'center');
   text('SPACE / ● TO FIRE',W/2,H*.67,14,'center');
@@ -768,6 +908,7 @@ function loop(t){
   const dt=Math.min(2,(t-last)/16.67||1);last=t;
   if(state==='flight')updateFlight();
   else if(state==='lander')updateLander();
+  else if(state==='takeoff')updateTakeoff();
   else if(state==='surface')updateSurface();
   else if(state==='exploding')updateExplosion();
 
@@ -776,6 +917,7 @@ function loop(t){
   if(state==='title')drawTitle();
   else if(state==='flight')drawFlight();
   else if(state==='lander')drawLander();
+  else if(state==='takeoff')drawTakeoff();
   else if(state==='surface')drawSurface();
   else if(state==='upgrade')drawUpgrade();
   else if(state==='exploding')drawExplosion();
