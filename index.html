@@ -33,7 +33,7 @@
 <script>
 'use strict';
 
-const VERSION='v0.6.0';
+const VERSION='v0.6.1';
 const c = document.getElementById('game');
 const ctx = c.getContext('2d');
 
@@ -441,7 +441,7 @@ function buy(type){
   if(type==='fuel' && banked>=2){banked-=2;ship.maxFuel+=20;ship.fuel=ship.maxFuel;score+=100}
   if(type==='laser' && banked>=3){banked-=3;ship.laser=Math.min(4,ship.laser+1);score+=150}
   if(type==='thrust' && banked>=3){banked-=3;ship.thrust=Math.min(3,ship.thrust+.35);score+=150}
-  if(type==='hull' && banked>=2){banked-=2;ship.hull=Math.min(5,ship.hull+1);score+=100}
+  if(type==='hull' && banked>=2 && ship.hull<5){banked-=2;ship.hull=Math.min(5,ship.hull+1);score+=100}
 }
 
 c.addEventListener('pointerdown',e=>{
@@ -452,13 +452,13 @@ c.addEventListener('pointerdown',e=>{
   if(state==='upgrade'){
     const bw=Math.min(330,W*.78), bx=(W-bw)/2;
     const rows=[
-      {y:H*.36,type:'fuel',cost:2},
-      {y:H*.46,type:'laser',cost:3},
-      {y:H*.56,type:'thrust',cost:3},
-      {y:H*.66,type:'hull',cost:2}
+      {y:H*.43,type:'fuel',cost:2},
+      {y:H*.53,type:'laser',cost:3},
+      {y:H*.63,type:'thrust',cost:3},
+      {y:H*.73,type:'hull',cost:2}
     ];
     for(const r of rows) if(x>bx&&x<bx+bw&&y>r.y-28&&y<r.y+28) buy(r.type);
-    if(y>H*.78){planetIndex++;setupFlight()}
+    if(y>H*.84){planetIndex++;setupFlight()}
   }
 });
 
@@ -575,17 +575,50 @@ function drawSurface(){
 
 function drawUpgrade(){
   ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);mono();
-  text('SHIP UPGRADE',W/2,H*.18,32,'center');text('BANKED GEMS: '+banked,W/2,H*.245,18,'center');
-  const bw=Math.min(330,W*.78),bx=(W-bw)/2;
+
+  text('SHIP UPGRADE',W/2,H*.12,32,'center');
+  text('BANKED GEMS: '+banked,W/2,H*.175,18,'center');
+
+  // Ship status panel.
+  const maxHull=5;
+  const damage=Math.max(0,maxHull-ship.hull);
+  const shipY=H*.27;
+  drawShip(W*.28,shipY,2.2,0,false);
+
+  text('SHIP STATUS',W*.46,H*.225,16);
+  text('HULL '+ship.hull+' / '+maxHull,W*.46,H*.255,18);
+  text(damage===0?'NO DAMAGE':damage+' HULL DAMAGE TO REPAIR',W*.46,H*.285,14);
+
+  // Hull condition bar.
+  const barX=W*.46, barY=H*.305, barW=Math.min(230,W*.42), barH=12;
+  ctx.strokeStyle='#eee';ctx.strokeRect(barX,barY,barW,barH);
+  ctx.fillStyle='#eee';ctx.fillRect(barX+2,barY+2,(barW-4)*(ship.hull/maxHull),barH-4);
+
+  const bw=Math.min(360,W*.82),bx=(W-bw)/2;
   const rows=[
-    ['FUEL TANK +20','2 GEMS',H*.36],
-    ['LASER POWER +1','3 GEMS',H*.46],
-    ['THRUST +','3 GEMS',H*.56],
-    ['REPAIR HULL +1','2 GEMS',H*.66]
+    ['FUEL TANK +20','2 GEMS',H*.43],
+    ['LASER POWER +1','3 GEMS',H*.53],
+    ['THRUST +','3 GEMS',H*.63],
+    ['REPAIR HULL +1',damage>0?'2 GEMS • '+damage+' DAMAGED':'FULL HULL',H*.73]
   ];
-  rows.forEach(r=>{ctx.strokeStyle='#eee';ctx.strokeRect(bx,r[2]-28,bw,56);text(r[0],bx+16,r[2]+5,16);text(r[1],bx+bw-16,r[2]+5,14,'right')});
-  text('TAP BELOW TO LAUNCH TO '+planets[planetIndex+1].name,W/2,H*.82,16,'center');
-  line(W*.3,H*.85,W*.7,H*.85,2);
+  rows.forEach((r,i)=>{
+    ctx.strokeStyle='#eee';ctx.strokeRect(bx,r[2]-27,bw,54);
+    text(r[0],bx+16,r[2]+5,16);
+    text(r[1],bx+bw-16,r[2]+5,14,'right');
+    if(i===3 && damage===0){
+      ctx.globalAlpha=.35;
+      ctx.fillStyle='#eee';
+      ctx.fillRect(bx,r[2]-27,bw,54);
+      ctx.globalAlpha=1;
+      ctx.fillStyle='#050505';
+      text('FULL HULL',bx+bw/2,r[2]+5,14,'center');
+      mono();
+    }
+  });
+
+  text('TAP BELOW TO LAUNCH TO '+planets[planetIndex+1].name,W/2,H*.88,16,'center');
+  line(W*.3,H*.91,W*.7,H*.91,2);
+  ctx.globalAlpha=.65;text(VERSION,W-18,H-18,12,'right');ctx.globalAlpha=1;
 }
 
 function drawTitle(){
