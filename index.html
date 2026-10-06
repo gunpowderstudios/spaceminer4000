@@ -76,33 +76,38 @@ const planets=[
 ];
 
 let state='title',planetIndex=0,score=0,high=+(localStorage.SM4000_HI||0),gems=0,banked=0;
-let ship={fuel:100,maxFuel:100,hull:3,laser:1,thrust:1,x:0,y:0,vx:0,vy:0,angle:0};
-let stars=[],asteroids=[],planet={x:0,y:0,r:90}, bullets=[],aliens=[],drops=[],particles=[];
+let ship={fuel:100,maxFuel:100,hull:3,laser:1,thrust:1,x:0,y:0,vx:0,vy:0,angle:0,av:0,grounded:false};
+let stars=[],shootingStars=[],asteroids=[],planet={x:0,y:0,r:90}, bullets=[],aliens=[],drops=[],particles=[];
 let cameraX=0, surfaceWidth=2400, landedX=0, msg='', msgT=0, stageTimer=0, deathReason='';
 
 function resetRun(){
   planetIndex=0;score=0;gems=0;banked=0;
-  ship={fuel:100,maxFuel:100,hull:3,laser:1,thrust:1,x:W*.22,y:H*.5,vx:0,vy:0,angle:0};
+  ship={fuel:100,maxFuel:100,hull:3,laser:1,thrust:1,x:W*.22,y:H*.5,vx:0,vy:0,angle:0,av:0,grounded:false};
   setupFlight();
 }
 
 function setupFlight(){
   state='flight'; stageTimer=0; bullets=[];aliens=[];drops=[];particles=[];
   ship.x=W*.18;ship.y=H*.5;ship.vx=0;ship.vy=0;ship.angle=0;
+  bullets.filter(b=>b.mode==='space').forEach(b=>{mono();ctx.fillRect(b.x-3,b.y-1,7,2)});
   const p=planets[planetIndex];
   planet={x:W+Math.max(350,W*.55),y:H*.5,r:70+planetIndex*14};
   stars=Array.from({length:120},()=>({x:rnd(0,W),y:rnd(0,H),s:rnd(.5,2.2)}));
-  asteroids=Array.from({length:10+planetIndex*4},()=>({
-    x:rnd(W*.3,planet.x-120),y:rnd(55,H-55),r:rnd(11,27),v:rnd(.4,1.5),
-    rot:rnd(0,Math.PI*2),spin:rnd(-.025,.025),
-    shape:Array.from({length:9},()=>rnd(.72,1.18))
-  }));
+  asteroids=Array.from({length:10+planetIndex*4},()=>{
+    const r=rnd(13,30);
+    return {
+      x:rnd(W*.35,planet.x-120),y:rnd(55,H-55),r,
+      vx:rnd(-1.4,-.35),vy:rnd(-.45,.45),
+      rot:rnd(0,Math.PI*2),spin:rnd(-.035,.035),mass:r*r,
+      shape:Array.from({length:9},()=>rnd(.72,1.18))
+    };
+  });
   msg='REACH '+p.name;msgT=160;
 }
 
 function setupLander(){
   state='lander';stageTimer=0;bullets=[];drops=[];particles=[];
-  ship.x=W*.5;ship.y=90;ship.vx=rnd(-.5,.5);ship.vy=0;ship.angle=0;
+  ship.x=W*.5;ship.y=90;ship.vx=rnd(-.55,.55);ship.vy=.15;ship.angle=rnd(-.12,.12);ship.av=0;
   landedX=W*.5;
   msg='LAND SOFTLY';msgT=140;
 }
@@ -112,11 +117,15 @@ function terrainY(x){
   return base + Math.sin(x*.012+planetIndex)*20 + Math.sin(x*.028)*10;
 }
 function padY(){return terrainY(W*.5)-8}
+function surfaceTerrainY(worldX){
+  const base=H*.78;
+  return base + Math.sin(worldX*.012+planetIndex)*20 + Math.sin(worldX*.028)*10;
+}
 
 function setupSurface(){
   state='surface';stageTimer=0; bullets=[];aliens=[];drops=[];particles=[];
   cameraX=0;
-  ship.x=150;ship.y=terrainY(150)-32; ship.vx=0; ship.vy=0;
+  ship.x=150;ship.y=surfaceTerrainY(150)-32; ship.vx=0; ship.vy=0; ship.grounded=true;
   const p=planets[planetIndex];
   aliens=Array.from({length:p.aliens},(_,i)=>({x:400+i*(surfaceWidth-600)/Math.max(1,p.aliens-1)+rnd(-80,80),y:0,w:26,h:32,hp:1+Math.floor(planetIndex/2),dir:Math.random()<.5?-1:1,t:rnd(0,200)}));
   drops=[];
@@ -147,6 +156,24 @@ function burst(x,y,n=12){
   for(let i=0;i<n;i++) particles.push({x,y,vx:rnd(-2.2,2.2),vy:rnd(-2.2,2.2),life:rnd(20,55)});
 }
 
+function splitAsteroid(a, impactVX=0, impactVY=0){
+  if(a.r<15){a.dead=true;burst(a.x,a.y,10);return}
+  a.dead=true;
+  const nr=a.r*.58;
+  for(let i=0;i<2;i++){
+    const ang=(i?1:-1)*rnd(.55,1.1);
+    const speed=rnd(1.0,2.0);
+    asteroids.push({
+      x:a.x+Math.cos(ang)*nr,y:a.y+Math.sin(ang)*nr,r:nr,
+      vx:a.vx+Math.cos(ang)*speed+impactVX*.15,
+      vy:a.vy+Math.sin(ang)*speed+impactVY*.15,
+      rot:rnd(0,Math.PI*2),spin:rnd(-.06,.06),mass:nr*nr,
+      shape:Array.from({length:8},()=>rnd(.72,1.18))
+    });
+  }
+  burst(a.x,a.y,16);
+}
+
 function updateFlight(){
   stageTimer++;
   const thrust=.105*ship.thrust;
@@ -158,35 +185,97 @@ function updateFlight(){
     ship.vy-=Math.cos(ship.angle)*thrust;
     ship.fuel-=.04;
   }
+  if(actionPressed && bullets.filter(b=>b.mode==='space').length<5){
+    bullets.push({
+      mode:'space',x:ship.x+Math.sin(ship.angle)*20,y:ship.y-Math.cos(ship.angle)*20,
+      vx:ship.vx+Math.sin(ship.angle)*7.5,vy:ship.vy-Math.cos(ship.angle)*7.5,life:75
+    });
+  }
+  actionPressed=false;
+
   ship.vx*=.994;ship.vy*=.994;
   ship.x+=ship.vx;ship.y+=ship.vy;
   ship.y=clamp(ship.y,25,H-25);ship.x=clamp(ship.x,20,W*.72);
   planet.x-=1.6+planetIndex*.25;
-  asteroids.forEach(a=>{a.x-=a.v+1.4;a.rot+=a.spin});
+
+  for(const b of bullets){
+    if(b.mode!=='space')continue;
+    b.x+=b.vx;b.y+=b.vy;b.life--;
+  }
+  bullets=bullets.filter(b=>b.mode!=='space'||(b.life>0&&b.x>-50&&b.x<W+100&&b.y>-50&&b.y<H+50));
+
+  asteroids.forEach(a=>{a.x+=a.vx-1.25;a.y+=a.vy;a.rot+=a.spin});
+
+  // Asteroid-to-asteroid elastic collisions.
+  for(let i=0;i<asteroids.length;i++){
+    const a=asteroids[i]; if(a.dead)continue;
+    for(let j=i+1;j<asteroids.length;j++){
+      const b=asteroids[j]; if(b.dead)continue;
+      const dx=b.x-a.x,dy=b.y-a.y,dist=Math.hypot(dx,dy),min=a.r+b.r;
+      if(dist>0&&dist<min){
+        const nx=dx/dist,ny=dy/dist;
+        const overlap=min-dist;
+        a.x-=nx*overlap*.5;a.y-=ny*overlap*.5;b.x+=nx*overlap*.5;b.y+=ny*overlap*.5;
+        const rvx=b.vx-a.vx,rvy=b.vy-a.vy,along=rvx*nx+rvy*ny;
+        if(along<0){
+          const impulse=-(1.75)*along/(1/a.mass+1/b.mass);
+          const ix=impulse*nx,iy=impulse*ny;
+          a.vx-=ix/a.mass;a.vy-=iy/a.mass;b.vx+=ix/b.mass;b.vy+=iy/b.mass;
+          a.spin+=rnd(-.01,.01);b.spin+=rnd(-.01,.01);
+          if(Math.abs(along)>2.25 && (a.r>18||b.r>18)){
+            (a.r>b.r?splitAsteroid(a,rvx,rvy):splitAsteroid(b,-rvx,-rvy));
+          }
+        }
+      }
+    }
+  }
+
+  // Laser shots can break larger asteroids.
+  for(const b of bullets){
+    if(b.mode!=='space'||b.life<=0)continue;
+    for(const a of asteroids){
+      if(a.dead)continue;
+      if(Math.hypot(b.x-a.x,b.y-a.y)<a.r+3){
+        b.life=0;score+=50;
+        splitAsteroid(a,b.vx,b.vy);
+        break;
+      }
+    }
+  }
+
   for(const a of asteroids){
+    if(a.dead)continue;
     if(Math.hypot(ship.x-a.x,ship.y-a.y)<a.r+13){
-      burst(ship.x,ship.y,20);ship.hull--;a.x=-100;score=Math.max(0,score-150);
+      const dx=ship.x-a.x,dy=ship.y-a.y,d=Math.hypot(dx,dy)||1;
+      ship.vx+=(dx/d)*2.2;ship.vy+=(dy/d)*2.2;
+      splitAsteroid(a,ship.vx,ship.vy);
+      burst(ship.x,ship.y,20);ship.hull--;score=Math.max(0,score-150);
       if(ship.hull<=0) lose('HULL DESTROYED — ASTEROID IMPACT');
       else {msg='ASTEROID HIT — HULL '+ship.hull;msgT=80}
     }
   }
+  asteroids=asteroids.filter(a=>!a.dead && a.x>-120 && a.y>-100 && a.y<H+100);
   if(ship.fuel<=0) lose('OUT OF FUEL');
   if(planet.x-planet.r < W*.74) setupLander();
 }
 
 function updateLander(){
-  const g=planets[planetIndex].gravity;
+  const g=planets[planetIndex].gravity*1.55;
   ship.vy+=g;
-  const turn=.04;
-  if(keys.ArrowLeft) ship.angle-=turn;
-  if(keys.ArrowRight) ship.angle+=turn;
+  const torque=.0028;
+  if(keys.ArrowLeft) ship.av-=torque;
+  if(keys.ArrowRight) ship.av+=torque;
+  ship.av*=.985;
+  ship.angle+=ship.av;
   if(keys.ArrowUp){
-    const power=.125*ship.thrust;
+    const power=.14*ship.thrust;
     ship.vx+=Math.sin(ship.angle)*power;
     ship.vy-=Math.cos(ship.angle)*power;
-    ship.fuel-=.06;
+    ship.fuel-=.075;
   }
-  ship.vx*=.998;ship.x+=ship.vx;ship.y+=ship.vy;
+  ship.vx*=.999;
+  ship.vy*=.9995;
+  ship.x+=ship.vx;ship.y+=ship.vy;
   ship.x=clamp(ship.x,22,W-22);
 
   const onPad=Math.abs(ship.x-W*.5)<72;
@@ -195,13 +284,13 @@ function updateLander(){
     const vertical=Math.abs(ship.vy);
     const horizontal=Math.abs(ship.vx);
     const upright=Math.abs(Math.atan2(Math.sin(ship.angle),Math.cos(ship.angle)));
-    if(onPad && vertical<1.8 && horizontal<1.35 && upright<0.32){
-      score+=500;burst(ship.x,groundY,18);ship.angle=0;setupSurface();
+    if(onPad && vertical<1.95 && horizontal<1.25 && upright<0.30){
+      score+=500;burst(ship.x,groundY,18);ship.angle=0;ship.av=0;setupSurface();
     } else if(!onPad) {
       lose('BAD LANDING — CRASHED ON ROUGH GROUND');
-    } else if(vertical>=1.8) {
+    } else if(vertical>=1.95) {
       lose('BAD LANDING — DESCENT TOO FAST');
-    } else if(horizontal>=1.35) {
+    } else if(horizontal>=1.25) {
       lose('BAD LANDING — TOO MUCH SIDEWAYS SPEED');
     } else {
       lose('BAD LANDING — SHIP NOT LEVEL');
@@ -213,37 +302,58 @@ function updateLander(){
 function updateSurface(){
   stageTimer++;
   const speed=2.4+ship.thrust*.2;
-  if(keys.ArrowLeft) ship.x-=speed;
-  if(keys.ArrowRight) ship.x+=speed;
-  ship.x=clamp(ship.x,30,surfaceWidth-30);
-  ship.y=terrainY(ship.x-cameraX)-32;
-  cameraX=clamp(ship.x-W*.35,0,surfaceWidth-W);
+  const move=(keys.ArrowRight?1:0)-(keys.ArrowLeft?1:0);
+  ship.vx += move*.34;
+  ship.vx *= ship.grounded?.72:.94;
+  ship.vx=clamp(ship.vx,-speed,speed);
 
-  if(actionPressed && bullets.length<4+ship.laser){
-    const dir=keys.ArrowLeft&&!keys.ArrowRight?-1:1;
-    bullets.push({x:ship.x+dir*16,y:ship.y-5,vx:dir*(7+ship.laser*.8),life:70});
+  // UP jumps; SPACE / action still fires.
+  if(keys.ArrowUp && ship.grounded){
+    ship.vy=-5.8-planetIndex*.08;
+    ship.grounded=false;
+  }
+  ship.vy+=.23+planetIndex*.012;
+  ship.x=clamp(ship.x+ship.vx,30,surfaceWidth-30);
+  ship.y+=ship.vy;
+
+  const ground=surfaceTerrainY(ship.x)-32;
+  if(ship.y>=ground){
+    ship.y=ground;ship.vy=0;ship.grounded=true;
+  } else ship.grounded=false;
+
+  cameraX=clamp(ship.x-W*.35,0,Math.max(0,surfaceWidth-W));
+
+  if(actionPressed && bullets.filter(b=>!b.enemy&&b.mode!=='space').length<4+ship.laser){
+    const dir=move<0?-1:1;
+    bullets.push({mode:'surface',x:ship.x+dir*16,y:ship.y-5,vx:dir*(7+ship.laser*.8),vy:0,life:70});
   }
   actionPressed=false;
-  bullets.forEach(b=>{b.x+=b.vx;b.life--});
-  bullets=bullets.filter(b=>b.life>0 && b.x>cameraX-30 && b.x<cameraX+W+30);
+  bullets.forEach(b=>{if(b.mode!=='space'){b.x+=b.vx;b.y+=(b.vy||0);b.life--}});
+  bullets=bullets.filter(b=>b.mode==='space'||(b.life>0&&b.x>cameraX-30&&b.x<cameraX+W+30));
 
   aliens.forEach(a=>{
-    a.t++; a.y=terrainY(a.x-cameraX)-30;
+    a.t++; a.y=surfaceTerrainY(a.x)-30;
     if(Math.abs(a.x-ship.x)<230) a.dir=a.x<ship.x?1:-1;
     a.x+=a.dir*(.45+planetIndex*.08);
     if(a.t%(120-planetIndex*10|0)===0 && Math.abs(a.x-ship.x)<420){
-      bullets.push({enemy:true,x:a.x,y:a.y-8,vx:(ship.x<a.x?-1:1)*(2.4+planetIndex*.3),life:180});
+      bullets.push({mode:'surface',enemy:true,x:a.x,y:a.y-8,vx:(ship.x<a.x?-1:1)*(2.4+planetIndex*.3),vy:0,life:180});
     }
   });
 
   for(const b of bullets){
+    if(b.mode==='space')continue;
     if(b.enemy){
       if(Math.abs(b.x-ship.x)<16 && Math.abs(b.y-ship.y)<24){
-        b.life=0;ship.hull--;burst(ship.x-cameraX,ship.y,15);if(ship.hull<=0)lose('SUIT BREACHED');
+        b.life=0;ship.hull--;burst(ship.x-cameraX,ship.y,15);
+        if(ship.hull<=0)lose('SUIT BREACHED — ALIEN FIRE');
+        else {msg='ALIEN HIT — HULL '+ship.hull;msgT=65}
       }
     }else{
       for(const a of aliens){
-        if(a.hp>0 && Math.abs(b.x-a.x)<18 && Math.abs(b.y-a.y)<22){a.hp-=ship.laser;b.life=0;score+=100;if(a.hp<=0){burst(a.x-cameraX,a.y,12);score+=150}}
+        if(a.hp>0 && Math.abs(b.x-a.x)<18 && Math.abs(b.y-a.y)<22){
+          a.hp-=ship.laser;b.life=0;score+=100;
+          if(a.hp<=0){burst(a.x-cameraX,a.y,12);score+=150}
+        }
       }
     }
   }
@@ -251,8 +361,8 @@ function updateSurface(){
 
   for(const d of drops){
     if(d.taken||d.type==='ship')continue;
-    d.y=terrainY(d.x-cameraX)-18;
-    if(Math.abs(d.x-ship.x)<24){
+    d.y=surfaceTerrainY(d.x)-18;
+    if(Math.abs(d.x-ship.x)<24 && Math.abs(d.y-ship.y)<34){
       d.taken=true;
       if(d.type==='gem'){gems++;score+=200;msg='+ GEM';msgT=45}
       if(d.type==='fuel'){ship.fuel=Math.min(ship.maxFuel,ship.fuel+22);score+=80;msg='+ FUEL';msgT=45}
@@ -260,8 +370,8 @@ function updateSurface(){
   }
   const exit=drops.find(d=>d.type==='ship');
   if(exit){
-    exit.y=terrainY(exit.x-cameraX)-34;
-    if(Math.abs(exit.x-ship.x)<42){
+    exit.y=surfaceTerrainY(exit.x)-34;
+    if(Math.abs(exit.x-ship.x)<42 && ship.grounded){
       if(aliens.length===0 || gems>=2){completePlanet();}
       else {msg='CLEAR MORE ALIENS / FIND GEMS';msgT=80}
     }
@@ -355,18 +465,18 @@ function drawLander(){
   drawShip(ship.x,ship.y,1.1,ship.angle,keys.ArrowUp);
   drawHUD();mono();text('LANDER',W/2,96,18,'center');
   text('V '+ship.vy.toFixed(2)+'   H '+Math.abs(ship.vx).toFixed(2)+'   ANG '+Math.round(Math.abs(ship.angle)*180/Math.PI)+'°',W/2,122,13,'center');
-  text('SAFE: V < 1.8   H < 1.35   ANG < 18°',W/2,145,12,'center');
+  text('SAFE: V < 1.95   H < 1.25   ANG < 17°',W/2,145,12,'center');
 }
 
 function drawSurface(){
   ctx.fillStyle='#060606';ctx.fillRect(0,0,W,H);
   const p=planets[planetIndex];
-  ctx.strokeStyle=p.tint;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(0,terrainY(0));for(let x=0;x<=W;x+=12)ctx.lineTo(x,terrainY(x));ctx.stroke();
+  ctx.strokeStyle=p.tint;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(0,surfaceTerrainY(cameraX));for(let x=0;x<=W;x+=12)ctx.lineTo(x,surfaceTerrainY(cameraX+x));ctx.stroke();
   ctx.fillStyle='#0b0b0b';ctx.lineTo(W,H);ctx.lineTo(0,H);ctx.fill();
   for(let i=0;i<10;i++){const x=(i*260-cameraX*.35)%(W+260)-100;mono(.22);ctx.beginPath();ctx.arc(x,H*.54,50+(i%3)*18,Math.PI,0);ctx.stroke()}
   drops.forEach(d=>{
     if(d.taken)return;
-    const x=d.x-cameraX;d.y=terrainY(x)-(d.type==='ship'?34:18);
+    const x=d.x-cameraX;d.y=surfaceTerrainY(d.x)-(d.type==='ship'?34:18);
     if(d.type==='gem'){ctx.strokeStyle=p.tint;ctx.beginPath();ctx.moveTo(x,d.y-10);ctx.lineTo(x+8,d.y);ctx.lineTo(x,d.y+10);ctx.lineTo(x-8,d.y);ctx.closePath();ctx.stroke()}
     if(d.type==='fuel'){mono();ctx.strokeRect(x-8,d.y-10,16,20);text('F',x,d.y+5,11,'center')}
     if(d.type==='ship')drawShip(x,d.y,1.6,0,false);
@@ -396,12 +506,18 @@ function drawUpgrade(){
 function drawTitle(){
   ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);mono();
   for(let i=0;i<80;i++){const x=(i*97)%W,y=(i*53)%H;ctx.globalAlpha=.15+(i%5)*.08;ctx.fillRect(x,y,1+(i%2),1+(i%2))}ctx.globalAlpha=1;
+  if(Math.random()<.018 && shootingStars.length<3){
+    shootingStars.push({x:rnd(W*.1,W*.75),y:rnd(20,H*.42),vx:rnd(8,13),vy:rnd(2.5,5),life:rnd(24,40)});
+  }
+  shootingStars.forEach(st=>{st.x+=st.vx;st.y+=st.vy;st.life--;ctx.globalAlpha=Math.min(1,st.life/10);mono();line(st.x,st.y,st.x-st.vx*4,st.y-st.vy*4,1.5)});
+  shootingStars=shootingStars.filter(st=>st.life>0&&st.x<W+80);ctx.globalAlpha=1;
   text('SPACE',W/2,H*.28,Math.min(70,W*.15),'center');
   text('MINER 4000',W/2,H*.40,Math.min(70,W*.15),'center');
   ctx.strokeStyle='#ff5050';line(W*.23,H*.44,W*.77,H*.44,3);
   text('FLY • LAND • MINE • UPGRADE',W/2,H*.52,17,'center');
-  text('LEFT / RIGHT = ROTATE   UP = THRUST',W/2,H*.60,14,'center');
-  text('SPACE / ● TO FIRE',W/2,H*.64,14,'center');
+  text('FLIGHT: LEFT / RIGHT ROTATE • UP THRUST',W/2,H*.59,14,'center');
+  text('SURFACE: LEFT / RIGHT MOVE • UP JUMP',W/2,H*.63,14,'center');
+  text('SPACE / ● TO FIRE',W/2,H*.67,14,'center');
   text('TAP TO LAUNCH',W/2,H*.75,21,'center');
   text('HIGH SCORE '+high,W/2,H*.82,13,'center');
 }
