@@ -107,9 +107,13 @@ function setupFlight(){
 
 function setupLander(){
   state='lander';stageTimer=0;bullets=[];drops=[];particles=[];
-  ship.x=W*.5;ship.y=90;ship.vx=rnd(-.55,.55);ship.vy=.15;ship.angle=rnd(-.12,.12);ship.av=0;
+  ship.x=W*.5;ship.y=78;
+  ship.vx=rnd(-.18,.18);
+  ship.vy=.03;
+  ship.angle=rnd(-.06,.06);
+  ship.av=0;
   landedX=W*.5;
-  msg='LAND SOFTLY';msgT=140;
+  msg='LUNAR DESCENT — USE SHORT THRUST BURSTS';msgT=180;
 }
 
 function terrainY(x){
@@ -256,46 +260,57 @@ function updateFlight(){
   }
   asteroids=asteroids.filter(a=>!a.dead && a.x>-120 && a.y>-100 && a.y<H+100);
   if(ship.fuel<=0) lose('OUT OF FUEL');
-  if(planet.x-planet.r < W*.74) setupLander();
+  if(planet.x-planet.r < W*.52) setupLander();
 }
 
 function updateLander(){
-  const g=planets[planetIndex].gravity*1.55;
+  // Intentionally floaty, 1980s Lunar Lander-style physics.
+  const g=.0048 + planetIndex*.00065;
   ship.vy+=g;
-  const torque=.0028;
+
+  const torque=.00145;
   if(keys.ArrowLeft) ship.av-=torque;
   if(keys.ArrowRight) ship.av+=torque;
-  ship.av*=.985;
+  ship.av*=.992;
   ship.angle+=ship.av;
+
   if(keys.ArrowUp){
-    const power=.14*ship.thrust;
+    const power=.0145*ship.thrust;
     ship.vx+=Math.sin(ship.angle)*power;
     ship.vy-=Math.cos(ship.angle)*power;
-    ship.fuel-=.075;
+    ship.fuel-=.028;
   }
-  ship.vx*=.999;
-  ship.vy*=.9995;
-  ship.x+=ship.vx;ship.y+=ship.vy;
+
+  ship.vx*=.9995;
+  ship.vy*=.9998;
+  ship.x+=ship.vx;
+  ship.y+=ship.vy;
   ship.x=clamp(ship.x,22,W-22);
 
-  const onPad=Math.abs(ship.x-W*.5)<72;
+  const onPad=Math.abs(ship.x-W*.5)<78;
   const groundY=onPad?padY():terrainY(ship.x);
+
   if(ship.y+22>=groundY){
     const vertical=Math.abs(ship.vy);
     const horizontal=Math.abs(ship.vx);
     const upright=Math.abs(Math.atan2(Math.sin(ship.angle),Math.cos(ship.angle)));
-    if(onPad && vertical<1.95 && horizontal<1.25 && upright<0.30){
-      score+=500;burst(ship.x,groundY,18);ship.angle=0;ship.av=0;setupSurface();
+
+    if(onPad && vertical<.72 && horizontal<.50 && upright<.24){
+      score+=500;
+      burst(ship.x,groundY,18);
+      ship.angle=0;ship.av=0;
+      setupSurface();
     } else if(!onPad) {
       lose('BAD LANDING — CRASHED ON ROUGH GROUND');
-    } else if(vertical>=1.95) {
+    } else if(vertical>=.72) {
       lose('BAD LANDING — DESCENT TOO FAST');
-    } else if(horizontal>=1.25) {
+    } else if(horizontal>=.50) {
       lose('BAD LANDING — TOO MUCH SIDEWAYS SPEED');
     } else {
       lose('BAD LANDING — SHIP NOT LEVEL');
     }
   }
+
   if(ship.fuel<=0) lose('OUT OF FUEL DURING LANDING');
 }
 
@@ -404,12 +419,34 @@ c.addEventListener('pointerdown',e=>{
   }
 });
 
-function drawShip(x,y,s=1,angle=0,thrusting=false){
+function drawShip(x,y,s=1,angle=0,thrusting=false,leftJet=false,rightJet=false){
   ctx.save();ctx.translate(x,y);ctx.rotate(angle);ctx.scale(s,s);mono();
   ctx.lineWidth=2;
   ctx.beginPath();ctx.moveTo(0,-18);ctx.lineTo(12,10);ctx.lineTo(7,9);ctx.lineTo(10,18);ctx.lineTo(2,13);ctx.lineTo(0,21);ctx.lineTo(-2,13);ctx.lineTo(-10,18);ctx.lineTo(-7,9);ctx.lineTo(-12,10);ctx.closePath();ctx.stroke();
   ctx.beginPath();ctx.arc(0,-5,4,0,Math.PI*2);ctx.stroke();
-  if(thrusting){ctx.beginPath();ctx.moveTo(-4,17);ctx.lineTo(0,30+rnd(0,7));ctx.lineTo(4,17);ctx.stroke()}
+
+  if(thrusting){
+    ctx.beginPath();
+    ctx.moveTo(-4,17);
+    ctx.lineTo(0,28+rnd(2,9));
+    ctx.lineTo(4,17);
+    ctx.stroke();
+    ctx.globalAlpha=.38;
+    ctx.beginPath();
+    ctx.moveTo(-2,18);
+    ctx.lineTo(0,35+rnd(0,7));
+    ctx.lineTo(2,18);
+    ctx.stroke();
+    ctx.globalAlpha=1;
+  }
+
+  // Tiny attitude-control jets used during rotation.
+  if(leftJet){
+    ctx.beginPath();ctx.moveTo(10,-5);ctx.lineTo(18,-2+rnd(-2,2));ctx.lineTo(11,2);ctx.stroke();
+  }
+  if(rightJet){
+    ctx.beginPath();ctx.moveTo(-10,-5);ctx.lineTo(-18,-2+rnd(-2,2));ctx.lineTo(-11,2);ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -449,8 +486,10 @@ function drawFlight(){
     ctx.beginPath();ctx.arc(a.r*.28,a.r*.18,a.r*.12,0,Math.PI*2);ctx.stroke();ctx.globalAlpha=1;ctx.restore();
   });
   const p=planets[planetIndex];
-  ctx.strokeStyle=p.tint;ctx.fillStyle='#080808';ctx.lineWidth=3;ctx.beginPath();ctx.arc(planet.x,planet.y,planet.r,0,Math.PI*2);ctx.fill();ctx.stroke();
-  ctx.globalAlpha=.35;ctx.strokeStyle=p.tint;ctx.beginPath();ctx.arc(planet.x-planet.r*.2,planet.y-planet.r*.1,planet.r*.28,0,Math.PI*2);ctx.stroke();ctx.globalAlpha=1;
+  const approach=Math.max(0,1-(planet.x-W*.52)/(W*.9));
+  const pr=planet.r*(1+approach*1.35);
+  ctx.strokeStyle=p.tint;ctx.fillStyle='#080808';ctx.lineWidth=3;ctx.beginPath();ctx.arc(planet.x,planet.y,pr,0,Math.PI*2);ctx.fill();ctx.stroke();
+  ctx.globalAlpha=.35;ctx.strokeStyle=p.tint;ctx.beginPath();ctx.arc(planet.x-pr*.2,planet.y-pr*.1,pr*.28,0,Math.PI*2);ctx.stroke();ctx.globalAlpha=1;
   drawShip(ship.x,ship.y,1,ship.angle,keys.ArrowUp);
   drawHUD();
   mono();text('FLY',W/2,96,18,'center');text(p.name,W/2,122,13,'center');
@@ -462,10 +501,10 @@ function drawLander(){
   ctx.beginPath();ctx.moveTo(0,terrainY(0));for(let x=0;x<=W;x+=12)ctx.lineTo(x,terrainY(x));ctx.stroke();
   ctx.fillStyle='#0c0c0c';ctx.fillRect(0,terrainY(W*.5),W,H);
   mono();ctx.fillRect(W*.5-62,padY(),124,7);line(W*.5-55,padY()+7,W*.5-45,padY()+18);line(W*.5+55,padY()+7,W*.5+45,padY()+18);
-  drawShip(ship.x,ship.y,1.1,ship.angle,keys.ArrowUp);
+  drawShip(ship.x,ship.y,1.1,ship.angle,keys.ArrowUp,keys.ArrowLeft,keys.ArrowRight);
   drawHUD();mono();text('LANDER',W/2,96,18,'center');
   text('V '+ship.vy.toFixed(2)+'   H '+Math.abs(ship.vx).toFixed(2)+'   ANG '+Math.round(Math.abs(ship.angle)*180/Math.PI)+'°',W/2,122,13,'center');
-  text('SAFE: V < 1.95   H < 1.25   ANG < 17°',W/2,145,12,'center');
+  text('SAFE: V < 0.72   H < 0.50   ANG < 14°',W/2,145,12,'center');
 }
 
 function drawSurface(){
