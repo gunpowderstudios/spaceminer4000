@@ -33,7 +33,7 @@
 <script>
 'use strict';
 
-const VERSION='v0.6.1';
+const VERSION='v0.6.2';
 const c = document.getElementById('game');
 const ctx = c.getContext('2d');
 
@@ -76,7 +76,7 @@ addEventListener('resize',resize); resize();
 const keys={};
 addEventListener('keydown',e=>{
   initAudio();
-  if(state==='title'){
+  if(state==='title'||state==='gameover'||state==='win'){
     if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space'].includes(e.code)) e.preventDefault();
     resetRun();
     return;
@@ -115,6 +115,7 @@ let state='title',planetIndex=0,score=0,high=+(localStorage.SM4000_HI||0),gems=0
 let ship={fuel:100,maxFuel:100,hull:3,laser:1,thrust:1,x:0,y:0,vx:0,vy:0,angle:0,av:0,grounded:false};
 let stars=[],shootingStars=[],asteroids=[],planet={x:0,y:0,r:90}, bullets=[],aliens=[],drops=[],particles=[];
 let cameraX=0, surfaceWidth=2400, landedX=0, msg='', msgT=0, stageTimer=0, deathReason='';
+let debris=[], explosionTimer=0, explosionScene='';
 
 function resetRun(){
   planetIndex=0;score=0;gems=0;banked=0;
@@ -186,7 +187,48 @@ function completePlanet(){
 
 function saveHi(){if(score>high){high=score;localStorage.SM4000_HI=high}}
 
-function lose(reason){
+function rotatePoint(x,y,a){
+  const c=Math.cos(a), ss=Math.sin(a);
+  return {x:x*c-y*ss,y:x*ss+y*c};
+}
+
+function spawnShipExplosion(x,y,angle=0){
+  const pieces=[
+    [0,-18,12,8],[12,8,9,10],[9,10,10,16],[10,16,3,12],
+    [3,12,0,15],[0,15,-3,12],[-3,12,-10,16],[-10,16,-9,10],
+    [-9,10,-12,8],[-12,8,0,-18],
+    [-6,11,-12,22],[-12,22,-16,24],
+    [6,11,12,22],[12,22,16,24],[-7,12,7,12]
+  ];
+  debris=pieces.map(p=>{
+    const mx=(p[0]+p[2])/2,my=(p[1]+p[3])/2;
+    const rp=rotatePoint(mx,my,angle);
+    return {
+      x1:p[0]-mx,y1:p[1]-my,x2:p[2]-mx,y2:p[3]-my,
+      x:x+rp.x,y:y+rp.y,angle:angle+rnd(-.5,.5),
+      vx:rnd(-3.2,3.2)+rp.x*.03,vy:rnd(-4.2,-.8)+rp.y*.03,
+      va:rnd(-.22,.22),life:70+rnd(0,25)
+    };
+  });
+  burst(x,y,34);
+  sfx('hit');
+}
+
+function startShipExplosion(reason){
+  deathReason=reason||'MISSION LOST';
+  saveHi();
+  explosionScene=state;
+  spawnShipExplosion(ship.x,ship.y,ship.angle||0);
+  explosionTimer=90;
+  msg=deathReason;msgT=90;
+  state='exploding';
+}
+
+function lose(reason,shipBoom=false){
+  if(shipBoom && (state==='flight'||state==='lander')){
+    startShipExplosion(reason);
+    return;
+  }
   deathReason=reason||'MISSION LOST';
   saveHi();state='gameover';msg=deathReason;
 }
@@ -292,7 +334,7 @@ function updateFlight(){
       ship.vx+=(dx/d)*2.2;ship.vy+=(dy/d)*2.2;
       splitAsteroid(a,ship.vx,ship.vy);
       sfx('hit');burst(ship.x,ship.y,20);ship.hull--;score=Math.max(0,score-150);
-      if(ship.hull<=0) lose('HULL DESTROYED — ASTEROID IMPACT');
+      if(ship.hull<=0) lose('HULL DESTROYED — ASTEROID IMPACT',true);
       else {msg='ASTEROID HIT — HULL '+ship.hull;msgT=80}
     }
   }
@@ -341,13 +383,13 @@ function updateLander(){
       ship.angle=0;ship.av=0;
       setupSurface();
     } else if(!onPad) {
-      lose('BAD LANDING — CRASHED ON ROUGH GROUND');
+      lose('BAD LANDING — CRASHED ON ROUGH GROUND',true);
     } else if(vertical>=.72) {
-      lose('BAD LANDING — DESCENT TOO FAST');
+      lose('BAD LANDING — DESCENT TOO FAST',true);
     } else if(horizontal>=.50) {
-      lose('BAD LANDING — TOO MUCH SIDEWAYS SPEED');
+      lose('BAD LANDING — TOO MUCH SIDEWAYS SPEED',true);
     } else {
-      lose('BAD LANDING — SHIP NOT LEVEL');
+      lose('BAD LANDING — SHIP NOT LEVEL',true);
     }
   }
 
@@ -465,32 +507,91 @@ c.addEventListener('pointerdown',e=>{
 function drawShip(x,y,s=1,angle=0,thrusting=false,leftJet=false,rightJet=false){
   ctx.save();ctx.translate(x,y);ctx.rotate(angle);ctx.scale(s,s);mono();
   ctx.lineWidth=2;
-  ctx.beginPath();ctx.moveTo(0,-18);ctx.lineTo(12,10);ctx.lineTo(7,9);ctx.lineTo(10,18);ctx.lineTo(2,13);ctx.lineTo(0,21);ctx.lineTo(-2,13);ctx.lineTo(-10,18);ctx.lineTo(-7,9);ctx.lineTo(-12,10);ctx.closePath();ctx.stroke();
-  ctx.beginPath();ctx.arc(0,-5,4,0,Math.PI*2);ctx.stroke();
+
+  // Fun retro lunar lander body.
+  ctx.beginPath();
+  ctx.moveTo(0,-18);
+  ctx.lineTo(11,-8);
+  ctx.lineTo(13,6);
+  ctx.lineTo(8,12);
+  ctx.lineTo(-8,12);
+  ctx.lineTo(-13,6);
+  ctx.lineTo(-11,-8);
+  ctx.closePath();
+  ctx.stroke();
+
+  // Cockpit dome and little antenna.
+  ctx.beginPath();ctx.arc(0,-6,5,Math.PI,0);ctx.stroke();
+  line(0,-18,0,-24,1.5);
+  ctx.beginPath();ctx.arc(0,-25,1.5,0,Math.PI*2);ctx.stroke();
+
+  // Engine bell.
+  line(-5,12,-3,17,2);line(5,12,3,17,2);line(-3,17,3,17,2);
+
+  // Long lunar-lander legs.
+  line(-8,10,-15,22,2);
+  line(8,10,15,22,2);
+  line(-15,22,-21,24,2);
+  line(15,22,21,24,2);
+  line(-10,13,-15,22,1);
+  line(10,13,15,22,1);
 
   if(thrusting){
     ctx.beginPath();
-    ctx.moveTo(-4,17);
-    ctx.lineTo(0,28+rnd(2,9));
-    ctx.lineTo(4,17);
+    ctx.moveTo(-3,18);
+    ctx.lineTo(0,31+rnd(2,10));
+    ctx.lineTo(3,18);
     ctx.stroke();
-    ctx.globalAlpha=.38;
+    ctx.globalAlpha=.35;
     ctx.beginPath();
-    ctx.moveTo(-2,18);
-    ctx.lineTo(0,35+rnd(0,7));
-    ctx.lineTo(2,18);
+    ctx.moveTo(-1.5,18);
+    ctx.lineTo(0,39+rnd(0,7));
+    ctx.lineTo(1.5,18);
     ctx.stroke();
     ctx.globalAlpha=1;
   }
-
-  // Tiny attitude-control jets used during rotation.
-  if(leftJet){
-    ctx.beginPath();ctx.moveTo(10,-5);ctx.lineTo(18,-2+rnd(-2,2));ctx.lineTo(11,2);ctx.stroke();
-  }
-  if(rightJet){
-    ctx.beginPath();ctx.moveTo(-10,-5);ctx.lineTo(-18,-2+rnd(-2,2));ctx.lineTo(-11,2);ctx.stroke();
-  }
+  if(leftJet){ctx.beginPath();ctx.moveTo(11,-4);ctx.lineTo(19,-1+rnd(-2,2));ctx.lineTo(12,3);ctx.stroke()}
+  if(rightJet){ctx.beginPath();ctx.moveTo(-11,-4);ctx.lineTo(-19,-1+rnd(-2,2));ctx.lineTo(-12,3);ctx.stroke()}
   ctx.restore();
+}
+
+function updateExplosion(){
+  explosionTimer--;
+  debris.forEach(d=>{
+    d.x+=d.vx;d.y+=d.vy;
+    d.vy+=explosionScene==='lander'?.055:.018;
+    d.angle+=d.va;d.life--;
+  });
+  debris=debris.filter(d=>d.life>0);
+  if(explosionTimer<=0) state='gameover';
+}
+
+function drawDebris(){
+  debris.forEach(d=>{
+    ctx.save();ctx.translate(d.x,d.y);ctx.rotate(d.angle);
+    mono(Math.max(.15,d.life/95));ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(d.x1,d.y1);ctx.lineTo(d.x2,d.y2);ctx.stroke();
+    ctx.restore();
+  });
+}
+
+function drawExplosion(){
+  ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);
+  if(explosionScene==='flight'){
+    stars.forEach(st=>{ctx.globalAlpha=.25+st.s*.15;ctx.fillStyle='#fff';ctx.fillRect(st.x,st.y,st.s,st.s)});
+    ctx.globalAlpha=1;
+    const p=planets[planetIndex];
+    ctx.strokeStyle=p.tint;ctx.lineWidth=2;
+    ctx.beginPath();ctx.arc(planet.x,planet.y,planet.r,0,Math.PI*2);ctx.stroke();
+  } else if(explosionScene==='lander'){
+    const p=planets[planetIndex];ctx.strokeStyle=p.tint;ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(0,terrainY(0));for(let x=0;x<=W;x+=12)ctx.lineTo(x,terrainY(x));ctx.stroke();
+    mono();ctx.fillRect(W*.5-62,padY(),124,7);
+  }
+  drawDebris();
+  particles.forEach(pt=>{mono(pt.life/55);ctx.fillRect(pt.x,pt.y,2,2)});
+  drawHUD();
+  ctx.fillStyle='#ff6b6b';text(deathReason,W/2,H*.2,18,'center');mono();
 }
 
 function drawAstronaut(x,y){
@@ -647,7 +748,7 @@ function drawEnd(win){
   if(!win){ctx.fillStyle='#ff6b6b';text(deathReason,W/2,H*.405,18,'center');mono();}
   text('SCORE '+score,W/2,H*.49,26,'center');
   text('HIGH SCORE '+Math.max(high,score),W/2,H*.54,18,'center');
-  text(win?'SPACE MINER STATUS: LEGEND':'TAP TO TRY AGAIN',W/2,H*.68,18,'center');
+  text(win?'SPACE MINER STATUS: LEGEND':'PRESS ANY KEY OR TAP TO TRY AGAIN',W/2,H*.68,18,'center');
   if(win) text('TAP TO PLAY AGAIN',W/2,H*.75,16,'center');
   ctx.globalAlpha=.65;text(VERSION,W-18,H-18,12,'right');ctx.globalAlpha=1;
 }
@@ -662,6 +763,7 @@ function loop(t){
   if(state==='flight')updateFlight();
   else if(state==='lander')updateLander();
   else if(state==='surface')updateSurface();
+  else if(state==='exploding')updateExplosion();
 
   particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vx*=.98;p.vy*=.98;p.life--});particles=particles.filter(p=>p.life>0);
 
@@ -670,9 +772,10 @@ function loop(t){
   else if(state==='lander')drawLander();
   else if(state==='surface')drawSurface();
   else if(state==='upgrade')drawUpgrade();
+  else if(state==='exploding')drawExplosion();
   else if(state==='gameover')drawEnd(false);
   else if(state==='win')drawEnd(true);
-  if(!['title','gameover','win','upgrade'].includes(state))drawMessage();
+  if(!['title','gameover','win','upgrade','exploding'].includes(state))drawMessage();
   actionPressed=false;
   requestAnimationFrame(loop);
 }
