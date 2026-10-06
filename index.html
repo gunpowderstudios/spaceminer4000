@@ -149,7 +149,7 @@ function setupLander(){
   ship.angle=rnd(-.06,.06);
   ship.av=0;
   landedX=W*.5;
-  msg='LUNAR DESCENT — USE SHORT THRUST BURSTS';msgT=180;
+  msg='LUNAR DESCENT — BOTTOM-WEIGHTED • USE SHORT THRUST BURSTS';msgT=180;
 }
 
 function terrainY(x){
@@ -340,7 +340,10 @@ function updateFlight(){
   }
   asteroids=asteroids.filter(a=>!a.dead && a.x>-120 && a.y>-100 && a.y<H+100);
   if(ship.fuel<=0) lose('OUT OF FUEL');
-  if(planet.x-planet.r < W*.52) setupLander();
+  const approach=Math.max(0,1-(planet.x-W*.52)/(W*.9));
+  const visibleR=planet.r*(1+approach*1.35);
+  const distToPlanet=Math.hypot(ship.x-planet.x,ship.y-planet.y);
+  if((planet.x-visibleR < W*.60 && distToPlanet < visibleR+W*.38) || planet.x < W*.42) setupLander();
 }
 
 function updateLander(){
@@ -348,10 +351,13 @@ function updateLander(){
   const g=.0048 + planetIndex*.00065;
   ship.vy+=g;
 
-  const torque=.00145;
+  const torque=.00125;
   if(keys.ArrowLeft) ship.av-=torque;
   if(keys.ArrowRight) ship.av+=torque;
-  ship.av*=.992;
+  // Bottom-heavy lander: gentle self-righting torque, like mass hanging below the craft.
+  const selfRight=-Math.sin(ship.angle)*.0009;
+  ship.av+=selfRight;
+  ship.av*=.989;
   ship.angle+=ship.av;
 
   if(keys.ArrowUp){
@@ -504,7 +510,7 @@ c.addEventListener('pointerdown',e=>{
   }
 });
 
-function drawShip(x,y,s=1,angle=0,thrusting=false,leftJet=false,rightJet=false){
+function drawShip(x,y,s=1,angle=0,thrusting=false,leftJet=false,rightJet=false,landerMode=false){
   ctx.save();ctx.translate(x,y);ctx.rotate(angle);ctx.scale(s,s);mono();
   ctx.lineWidth=2;
 
@@ -648,7 +654,7 @@ function drawLander(){
   ctx.beginPath();ctx.moveTo(0,terrainY(0));for(let x=0;x<=W;x+=12)ctx.lineTo(x,terrainY(x));ctx.stroke();
   ctx.fillStyle='#0c0c0c';ctx.fillRect(0,terrainY(W*.5),W,H);
   mono();ctx.fillRect(W*.5-62,padY(),124,7);line(W*.5-55,padY()+7,W*.5-45,padY()+18);line(W*.5+55,padY()+7,W*.5+45,padY()+18);
-  drawShip(ship.x,ship.y,1.1,ship.angle,keys.ArrowUp,keys.ArrowLeft,keys.ArrowRight);
+  drawShip(ship.x,ship.y,1.1,ship.angle,keys.ArrowUp,keys.ArrowLeft,keys.ArrowRight,true);
   drawHUD();mono();text('LANDER',W/2,96,18,'center');
   text('V '+ship.vy.toFixed(2)+'   H '+Math.abs(ship.vx).toFixed(2)+'   ANG '+Math.round(Math.abs(ship.angle)*180/Math.PI)+'°',W/2,122,13,'center');
   text('SAFE: V < 0.72   H < 0.50   ANG < 14°',W/2,145,12,'center');
