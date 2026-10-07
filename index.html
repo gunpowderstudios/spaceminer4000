@@ -33,7 +33,7 @@
 <script>
 'use strict';
 
-const VERSION='v0.7.2';
+const VERSION='v0.7.3';
 const c = document.getElementById('game');
 const ctx = c.getContext('2d');
 
@@ -129,13 +129,14 @@ function setupFlight(){
   state='flight'; stageTimer=0; bullets=[];aliens=[];drops=[];particles=[];
   ship.x=W*.18;ship.y=H*.5;ship.vx=0;ship.vy=0;ship.angle=0;
   const p=planets[planetIndex];
-  planet={x:W+Math.max(350,W*.55),y:H*.5,r:70+planetIndex*14};
+  const flightSpan=Math.max(350,W*.55)*10;
+  planet={x:W+flightSpan,y:H*.5,r:70+planetIndex*14};
   stars=Array.from({length:120},()=>({x:rnd(0,W),y:rnd(0,H),s:rnd(.5,2.2)}));
-  gasRings=Array.from({length:3+Math.floor(Math.random()*3)},()=>({
+  gasRings=Array.from({length:10+Math.floor(Math.random()*6)},()=>({
     x:rnd(W*.65,planet.x-160),y:rnd(85,H-85),r:rnd(18,30),vx:rnd(-.25,.18),taken:false,
     wobble:rnd(0,Math.PI*2)
   }));
-  asteroids=Array.from({length:10+planetIndex*4},()=>{
+  asteroids=Array.from({length:34+planetIndex*7},()=>{
     const r=rnd(13,30);
     return {
       x:rnd(W*.35,planet.x-120),y:rnd(55,H-55),r,
@@ -154,8 +155,25 @@ function setupLander(){
   ship.vy=.03;
   ship.angle=rnd(-.06,.06);
   ship.av=0;
+
+  // A few small drifting rocks cross the descent zone, forcing course corrections.
+  asteroids=Array.from({length:3+Math.min(3,planetIndex)},(_,i)=>{
+    const r=rnd(8,15);
+    const fromLeft=i%2===0;
+    return {
+      x:fromLeft?rnd(-80,-20):rnd(W+20,W+80),
+      y:rnd(H*.22,H*.58),
+      r,
+      vx:fromLeft?rnd(.32,.65):rnd(-.65,-.32),
+      vy:rnd(-.035,.035),
+      rot:rnd(0,Math.PI*2),spin:rnd(-.028,.028),mass:r*r,
+      shape:Array.from({length:8},()=>rnd(.76,1.16)),
+      landerRock:true
+    };
+  });
+
   landedX=W*.5;
-  msg='LUNAR DESCENT — BOTTOM-WEIGHTED • USE SHORT THRUST BURSTS';msgT=180;
+  msg='LUNAR DESCENT — WATCH FOR DRIFTING ASTEROIDS';msgT=180;
 }
 
 function terrainY(x){
@@ -540,6 +558,25 @@ function updateLander(){
   ship.y+=ship.vy;
   ship.x=clamp(ship.x,22,W-22);
 
+  // Drifting landing-zone asteroids wrap around the screen.
+  asteroids.forEach(a=>{
+    a.x+=a.vx;a.y+=a.vy;a.rot+=a.spin;
+    if(a.vx>0 && a.x>W+50){a.x=-50;a.y=rnd(H*.22,H*.58)}
+    if(a.vx<0 && a.x<-50){a.x=W+50;a.y=rnd(H*.22,H*.58)}
+    if(Math.hypot(ship.x-a.x,ship.y-a.y)<a.r+14){
+      const dx=ship.x-a.x,dy=ship.y-a.y,d=Math.hypot(dx,dy)||1;
+      ship.vx+=(dx/d)*.42;
+      ship.vy+=(dy/d)*.18;
+      a.vx*=-1;
+      a.vy+=rnd(-.04,.04);
+      ship.hull--;
+      sfx('hit');burst(ship.x,ship.y,14);
+      msg='ASTEROID CLIP — HULL '+ship.hull;msgT=70;
+      if(ship.hull<=0){lose('HULL DESTROYED — ASTEROID DURING LANDING',true);return}
+    }
+  });
+  if(state!=='lander') return;
+
   const onPad=Math.abs(ship.x-W*.5)<78;
   const groundY=onPad?padY():terrainY(ship.x);
 
@@ -909,10 +946,24 @@ function drawLander(){
   ctx.beginPath();ctx.moveTo(0,terrainY(0));for(let x=0;x<=W;x+=12)ctx.lineTo(x,terrainY(x));ctx.stroke();
   ctx.fillStyle='#0c0c0c';ctx.fillRect(0,terrainY(W*.5),W,H);
   mono();ctx.fillRect(W*.5-62,padY(),124,7);line(W*.5-55,padY()+7,W*.5-45,padY()+18);line(W*.5+55,padY()+7,W*.5+45,padY()+18);
+
+  asteroids.filter(a=>a.landerRock).forEach(a=>{
+    ctx.save();ctx.translate(a.x,a.y);ctx.rotate(a.rot);mono(.72);ctx.lineWidth=2;
+    ctx.beginPath();
+    a.shape.forEach((m,i)=>{
+      const ang=i/a.shape.length*Math.PI*2,rr=a.r*m,x=Math.cos(ang)*rr,y=Math.sin(ang)*rr;
+      i?ctx.lineTo(x,y):ctx.moveTo(x,y);
+    });
+    ctx.closePath();ctx.stroke();
+    ctx.globalAlpha=.35;
+    ctx.beginPath();ctx.arc(-a.r*.18,-a.r*.08,a.r*.2,0,Math.PI*2);ctx.stroke();
+    ctx.globalAlpha=1;ctx.restore();
+  });
+
   drawShip(ship.x,ship.y,1.1,ship.angle,keys.ArrowUp,keys.ArrowLeft,keys.ArrowRight,true);
   drawHUD();mono();text('LANDER',W/2,96,18,'center');
   text('V '+ship.vy.toFixed(2)+'   H '+Math.abs(ship.vx).toFixed(2)+'   ANG '+Math.round(Math.abs(ship.angle)*180/Math.PI)+'°',W/2,122,13,'center');
-  text('SAFE: V < 0.72   H < 0.50   ANG < 14°',W/2,145,12,'center');
+  text('SAFE: V < 0.72   H < 0.50   ANG < 14° • AVOID ROCKS',W/2,145,12,'center');
 }
 
 function drawSurface(){
