@@ -4,11 +4,19 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
 <title>Space Miner 4000</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
 <style>
-  html,body{margin:0;height:100%;background:#050505;color:#f2f2f2;font-family:Arial,Helvetica,sans-serif;overflow:hidden}
+  html,body{margin:0;height:100%;background:#050505;color:#f2f2f2;font-family:'VT323',monospace;overflow:hidden}
   *{box-sizing:border-box}
   #wrap{position:fixed;inset:0;display:grid;place-items:center;background:#050505}
   canvas{width:100vw;height:100vh;display:block;touch-action:none}
+  /* CRT: scanlines + vignette (press C to toggle) */
+  #crt{position:fixed;inset:0;pointer-events:none;
+    background:repeating-linear-gradient(to bottom,rgba(0,0,0,0) 0px,rgba(0,0,0,0) 2px,rgba(0,0,0,.26) 3px,rgba(0,0,0,0) 4px);
+    box-shadow:inset 0 0 14vmin 4vmin rgba(0,0,0,.85)}
+  #crt.off{display:none}
   #touch{position:fixed;inset:0;pointer-events:none}
   .pad{position:absolute;bottom:18px;display:flex;gap:10px;pointer-events:auto}
   .left{left:18px}.right{right:18px}
@@ -20,6 +28,7 @@
 </head>
 <body>
 <div id="wrap"><canvas id="game"></canvas></div>
+<div id="crt"></div>
 <div id="touch">
   <div class="pad left">
     <button class="ctrl" data-k="ArrowLeft">◀</button>
@@ -33,12 +42,13 @@
 <script>
 'use strict';
 
-const VERSION='v0.8.0';
+const VERSION='v0.9.0';
 const c = document.getElementById('game');
 const ctx = c.getContext('2d');
+const crtEl=document.getElementById('crt');
 
 /* ---------------------------------------------------------------- AUDIO */
-let audioCtx=null, thrustNode=null;
+let audioCtx=null, thrustNode=null, noiseBuf=null;
 function initAudio(){
   if(!audioCtx){
     const AC=window.AudioContext||window.webkitAudioContext;
@@ -46,36 +56,58 @@ function initAudio(){
   }
   if(audioCtx && audioCtx.state==='suspended') audioCtx.resume();
 }
-function beep(freq=440,dur=.08,type='square',vol=.05,slide=0){
+function getNoise(){
+  if(!noiseBuf){
+    const n=audioCtx.sampleRate;noiseBuf=audioCtx.createBuffer(1,n,n);
+    const d=noiseBuf.getChannelData(0);for(let i=0;i<n;i++)d[i]=Math.random()*2-1;
+  }
+  return noiseBuf;
+}
+function beep(freq=440,dur=.08,type='square',vol=.05,slide=0,delay=0){
   if(!audioCtx)return;
-  const now=audioCtx.currentTime;
+  const now=audioCtx.currentTime+delay;
   const o=audioCtx.createOscillator(),g=audioCtx.createGain();
   o.type=type;o.frequency.setValueAtTime(freq,now);
   if(slide) o.frequency.linearRampToValueAtTime(Math.max(30,freq+slide),now+dur);
   g.gain.setValueAtTime(vol,now);
   g.gain.exponentialRampToValueAtTime(.0001,now+dur);
-  o.connect(g);g.connect(audioCtx.destination);o.start(now);o.stop(now+dur);
+  o.connect(g);g.connect(audioCtx.destination);o.start(now);o.stop(now+dur+.02);
+}
+// Arcade-style filtered noise burst for explosions.
+function noise(dur=.3,vol=.12,freq=1200){
+  if(!audioCtx)return;
+  const now=audioCtx.currentTime;
+  const src=audioCtx.createBufferSource();src.buffer=getNoise();
+  const f=audioCtx.createBiquadFilter();f.type='lowpass';
+  f.frequency.setValueAtTime(freq,now);f.frequency.exponentialRampToValueAtTime(60,now+dur);
+  const g=audioCtx.createGain();g.gain.setValueAtTime(vol,now);g.gain.exponentialRampToValueAtTime(.0001,now+dur);
+  src.connect(f);f.connect(g);g.connect(audioCtx.destination);
+  src.start(now,Math.random()*.5);src.stop(now+dur+.02);
 }
 function sfx(name){
   initAudio();
   if(!audioCtx)return;
-  if(name==='shoot') beep(760,.055,'square',.035,-260);
-  else if(name==='hit'){beep(105,.11,'sawtooth',.07,-55);setTimeout(()=>beep(70,.08,'square',.045,-20),35)}
+  if(name==='shoot') beep(880,.06,'square',.03,-500);
+  else if(name==='hit'){noise(.25,.14,900);beep(105,.11,'sawtooth',.06,-55)}
+  else if(name==='pop') noise(.16,.07,2400);
+  else if(name==='boom'){noise(.9,.25,1400);beep(70,.5,'sawtooth',.07,-40)}
   else if(name==='alien') beep(240,.07,'square',.025,120);
-  else if(name==='gem'){beep(680,.06,'sine',.045,180);setTimeout(()=>beep(940,.07,'sine',.035,100),45)}
-  else if(name==='fuel'){beep(180,.07,'sine',.045,120);setTimeout(()=>beep(300,.08,'sine',.035,100),50)}
+  else if(name==='gem'){beep(1046,.05,'square',.03);beep(1568,.08,'square',.03,0,.05)}
+  else if(name==='fuel'){beep(180,.07,'sine',.045,120);beep(300,.08,'sine',.035,100,.05)}
   else if(name==='crack') beep(320,.05,'square',.03,-120);
   else if(name==='buzz') beep(90,.15,'square',.05,-20);
-  else if(name==='alarm') beep(880,.06,'square',.025);
-  else if(name==='land'){beep(392,.12,'sine',.045);setTimeout(()=>beep(523,.12,'sine',.04),90);setTimeout(()=>beep(659,.18,'sine',.04),180)}
+  else if(name==='alarm') beep(880,.06,'square',.022);
+  else if(name==='warn'){for(let i=0;i<3;i++){beep(660,.12,'square',.03,0,i*.28);beep(440,.12,'square',.03,0,i*.28+.14)}}
+  else if(name==='land'){[392,523,659,784].forEach((f,i)=>beep(f,.14,'square',.035,0,i*.09))}
+  else if(name==='jingle'){[523,659,784,1046,784,1046].forEach((f,i)=>beep(f,.09,'square',.03,0,i*.08))}
+  else if(name==='extra'){for(let i=0;i<8;i++)beep(i%2?1318:1046,.06,'square',.03,0,i*.06)}
+  else if(name==='beat0') beep(58,.1,'square',.07);
+  else if(name==='beat1') beep(52,.1,'square',.07);
 }
-// Continuous filtered-noise engine rumble, faded in/out by thrust state.
 function setThrustSound(on){
   if(!audioCtx) return;
   if(!thrustNode){
-    const n=audioCtx.sampleRate,buf=audioCtx.createBuffer(1,n,n),d=buf.getChannelData(0);
-    for(let i=0;i<n;i++) d[i]=Math.random()*2-1;
-    const src=audioCtx.createBufferSource();src.buffer=buf;src.loop=true;
+    const src=audioCtx.createBufferSource();src.buffer=getNoise();src.loop=true;
     const f=audioCtx.createBiquadFilter();f.type='lowpass';f.frequency.value=380;
     const g=audioCtx.createGain();g.gain.value=0;
     src.connect(f);f.connect(g);g.connect(audioCtx.destination);src.start();
@@ -89,37 +121,111 @@ function setThrustSound(on){
 
 /* --------------------------------------------------------------- CANVAS */
 let W=innerWidth,H=innerHeight,DPR=Math.min(devicePixelRatio||1,2);
+// Low-res copies of the frame, added back on top = cheap phosphor bloom.
+const glow1=document.createElement('canvas'),g1=glow1.getContext('2d');
+const glow2=document.createElement('canvas'),g2=glow2.getContext('2d');
 function resize(){
   W=innerWidth; H=innerHeight; DPR=Math.min(devicePixelRatio||1,2);
   c.width=W*DPR;c.height=H*DPR;
   ctx.setTransform(DPR,0,0,DPR,0,0);
+  glow1.width=Math.ceil(W/3);glow1.height=Math.ceil(H/3);
+  glow2.width=Math.ceil(W/9);glow2.height=Math.ceil(H/9);
 }
 addEventListener('resize',resize); resize();
+
+/* -------------------------------------------------------------- HELPERS */
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const FONT_BODY='"VT323","Courier New",monospace', FONT_ARC='"Press Start 2P","Courier New",monospace';
+function line(x1,y1,x2,y2,w=2){ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke()}
+function text(t,x,y,s=18,align='left'){ctx.font=Math.round(s*1.35)+'px '+FONT_BODY;ctx.textAlign=align;ctx.fillText(t,x,y)}
+// Chunky arcade lettering, shrunk to fit the screen width if needed.
+function arc(t,x,y,s=18,align='center',maxW=W*.92){const size=Math.max(8,Math.min(s,maxW/(t.length*1.02)));ctx.font=Math.round(size)+'px '+FONT_ARC;ctx.textAlign=align;ctx.fillText(t,x,y)}
+function mono(alpha=1){ctx.strokeStyle='rgba(245,245,245,'+alpha+')';ctx.fillStyle='rgba(245,245,245,'+alpha+')'}
+function rng(seed){return()=>{seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function store(k,v){try{if(v===undefined)return +(localStorage.getItem(k)||0);localStorage.setItem(k,v)}catch(e){return 0}}
+const pad6=n=>String(Math.max(0,n|0)).padStart(6,'0');
+
+/* ---------------------------------------------------------------- DATA */
+const planets=[
+ {name:'ASH MOON', tint:'#bfbfbf', aliens:5, gems:4, fuel:3},
+ {name:'BLUE DUST', tint:'#9bc7ff', aliens:7, gems:5, fuel:3},
+ {name:'GREEN ROCK', tint:'#a8ddb0', aliens:9, gems:6, fuel:3},
+ {name:'VIOLET IX', tint:'#d0b1ff', aliens:11, gems:7, fuel:2},
+ {name:'BIG RED', tint:'#ff5050', aliens:14, gems:8, fuel:2}
+];
+const ORE='#ffd36b';
+const FLY_BASE=1.6;          // autoscroll speed in deep space (px/frame)
+const EXTRA_LIFE_EVERY=10000;
+
+function loadTable(){
+  try{const t=JSON.parse(localStorage.getItem('SM4000_TABLE')||'null');if(Array.isArray(t)&&t.length)return t}catch(e){}
+  return [{n:'GPS',s:20000},{n:'ACE',s:15000},{n:'ZAP',s:10000},{n:'CPU',s:5000},{n:'BOB',s:2500}];
+}
+let table=loadTable();
+
+let state='title',planetIndex=0,score=0,high=Math.max(store('SM4000_HI'),table[0].s),bestPlanet=store('SM4000_BEST'),gems=0,banked=0;
+let lives=3,nextLife=EXTRA_LIFE_EVERY;
+let ship={};
+let stars=[],shootingStars=[],asteroids=[],gasRings=[],pickups=[],planet={r:90},bullets=[],ebullets=[],aliens=[],drops=[],particles=[],popups=[];
+let cameraX=0, surfaceWidth=2400, msg='', msgT=0, stageTimer=0, deathReason='';
+let debris=[], explosionTimer=0, explosionScene='', shake=0, flash=0, hideShip=false;
+let takeoffAlt=0,takeoffV=0,takeoffCam=0,cavernHeight=2200,lavaAlt=-400;
+let cavernNodes=[],cavernSpikes=[],runSeed=1;
+let pads=[],padHalf=62,o2=100;
+let dist=0,tripDist=1,scroll=FLY_BASE,nextRock=0,nextRing=0,section=0,beatT=0,beat=0,ufo=null;
+let readyT=0,readyA='',readyB='';
+let entry=null,endWin=false;
+let crtOn=!store('SM4000_NOCRT');
+crtEl.classList.toggle('off',!crtOn);
+let titleRocks=[],demoT=0;
 
 /* ---------------------------------------------------------------- INPUT */
 const keys={};
 const GAME_KEYS=['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space','Enter'];
+const LETTERS='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.- ';
 let actionPressed=false, endAt=-1e9, upSel=0;
 function canRestart(){return performance.now()-endAt>700}
+function isMenu(){return ['title','gameover','win','upgrade','initials'].includes(state)}
+
+// One handler for keyboard and touch buttons on all menu screens.
+function menuKey(code){
+  if(state==='initials'){
+    const L=LETTERS.length;
+    if(code==='ArrowUp') entry.l[entry.i]=(entry.l[entry.i]+1)%L;
+    else if(code==='ArrowDown') entry.l[entry.i]=(entry.l[entry.i]+L-1)%L;
+    else if(code==='ArrowLeft') entry.i=Math.max(0,entry.i-1);
+    else if(code==='ArrowRight'||code==='Space'||code==='Enter'){
+      entry.i++;
+      if(entry.i>2){
+        const n=entry.l.map(k=>LETTERS[k]).join('');
+        table.push({n,s:score});table.sort((a,b)=>b.s-a.s);table=table.slice(0,5);
+        try{localStorage.setItem('SM4000_TABLE',JSON.stringify(table))}catch(e){}
+        state=endWin?'win':'gameover';endAt=performance.now();sfx('land');
+        return;
+      }
+    }
+    sfx('crack');
+    return;
+  }
+  if(state==='title'||state==='gameover'||state==='win'){
+    if(canRestart()) resetRun();
+    return;
+  }
+  if(state==='upgrade'){
+    const n=upgradeLayout().rows.length;
+    if(code==='ArrowUp') upSel=(upSel+n-1)%n;
+    if(code==='ArrowDown') upSel=(upSel+1)%n;
+    if(code==='Space') buy(upgradeLayout().rows[upSel].type);
+    if(code==='Enter'||code==='ArrowRight') setupTakeoff();
+  }
+}
 
 addEventListener('keydown',e=>{
   initAudio();
   if(GAME_KEYS.includes(e.code)) e.preventDefault();
-  if(state==='title'||state==='gameover'||state==='win'){
-    // Ignore held-key auto-repeat so dying never skips straight past the end screen.
-    if(e.repeat || !canRestart()) return;
-    resetRun();
-    return;
-  }
-  if(state==='upgrade'){
-    if(e.repeat) return;
-    const n=upgradeLayout().rows.length;
-    if(e.code==='ArrowUp') upSel=(upSel+n-1)%n;
-    if(e.code==='ArrowDown') upSel=(upSel+1)%n;
-    if(e.code==='Space') buy(upgradeLayout().rows[upSel].type);
-    if(e.code==='Enter') setupTakeoff();
-    return;
-  }
+  if(e.code==='KeyC'&&!e.repeat){crtOn=!crtOn;crtEl.classList.toggle('off',!crtOn);store('SM4000_NOCRT',crtOn?0:1);return}
+  if(isMenu()){ if(!e.repeat) menuKey(e.code); return; }
   keys[e.code]=true;
   if(e.code==='Space') actionPressed=true;
 });
@@ -127,108 +233,90 @@ addEventListener('keyup',e=>keys[e.code]=false);
 document.querySelectorAll('[data-k]').forEach(b=>{
   const code=b.dataset.k;
   const on=e=>{e.preventDefault();initAudio();
-    if(state==='title'||state==='gameover'||state==='win'){if(canRestart())resetRun();return}
-    if(state==='upgrade')return;
+    if(isMenu()){menuKey(code);return}
     keys[code]=true;if(code==='Space')actionPressed=true};
   const off=e=>{e.preventDefault();keys[code]=false};
   b.addEventListener('pointerdown',on);b.addEventListener('pointerup',off);b.addEventListener('pointercancel',off);b.addEventListener('pointerleave',off);
 });
 
-/* -------------------------------------------------------------- HELPERS */
-const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
-const rnd=(a,b)=>a+Math.random()*(b-a);
-function line(x1,y1,x2,y2,w=2){ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke()}
-function text(t,x,y,s=18,align='left'){ctx.font='700 '+s+'px Arial';ctx.textAlign=align;ctx.fillText(t,x,y)}
-function mono(alpha=1){ctx.strokeStyle='rgba(245,245,245,'+alpha+')';ctx.fillStyle='rgba(245,245,245,'+alpha+')'}
-// Small seeded RNG so each run gets its own (but internally consistent) caverns.
-function rng(seed){return()=>{seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
-function store(k,v){try{if(v===undefined)return +(localStorage.getItem(k)||0);localStorage.setItem(k,v)}catch(e){return 0}}
-
-/* ---------------------------------------------------------------- DATA */
-const planets=[
- {name:'ASH MOON', tint:'#bfbfbf', gravity:.055, aliens:5, gems:4, fuel:3},
- {name:'BLUE DUST', tint:'#9bc7ff', gravity:.068, aliens:7, gems:5, fuel:3},
- {name:'GREEN ROCK', tint:'#a8ddb0', gravity:.078, aliens:9, gems:6, fuel:3},
- {name:'VIOLET IX', tint:'#d0b1ff', gravity:.088, aliens:11, gems:7, fuel:2},
- {name:'BIG RED', tint:'#ff5050', gravity:.105, aliens:14, gems:8, fuel:2}
-];
-
-let state='title',planetIndex=0,score=0,high=store('SM4000_HI'),bestPlanet=store('SM4000_BEST'),gems=0,banked=0;
-let ship={};
-let stars=[],shootingStars=[],asteroids=[],gasRings=[],pickups=[],planet={x:0,y:0,r:90}, bullets=[],aliens=[],drops=[],particles=[];
-let cameraX=0, surfaceWidth=2400, msg='', msgT=0, stageTimer=0, deathReason='';
-let debris=[], explosionTimer=0, explosionScene='', shake=0;
-let takeoffAlt=0,takeoffV=0,takeoffCam=0,cavernHeight=2200,lavaAlt=-400;
-let cavernNodes=[],cavernSpikes=[],runSeed=1;
-let padX=0,padHalf=62,spawnT=0,ringT=0,o2=100;
-
+/* ---------------------------------------------------------------- RUN */
 function resetRun(){
-  planetIndex=0;score=0;gems=0;banked=0;upSel=0;
+  planetIndex=0;score=0;gems=0;banked=0;upSel=0;lives=3;nextLife=EXTRA_LIFE_EVERY;
   runSeed=(Math.random()*1e9)|0;
   ship={fuel:100,maxFuel:100,hull:3,maxHull:3,laser:1,thrust:1,x:W*.22,y:H*.5,vx:0,vy:0,angle:0,av:0,grounded:false,inv:0,face:1};
   setupFlight();
 }
 
-/* ---------------------------------------------------------------- SETUP */
-function makeAsteroid(x,y,ore=false){
-  const r=rnd(13,30);
-  return {x,y,r,vx:rnd(-1.4,-.35),vy:rnd(-.45,.45),rot:rnd(0,Math.PI*2),spin:rnd(-.035,.035),
-          mass:r*r,shape:Array.from({length:9},()=>rnd(.72,1.18)),ore};
+function ready(a,b){readyT=105;readyA=a;readyB=b;sfx('jingle')}
+
+function addScore(n,x,y,world=false){
+  score+=n;
+  if(x!==undefined) popups.push({x,y,t:55,txt:String(n),world});
+  if(score>=nextLife){lives++;nextLife+=EXTRA_LIFE_EVERY;sfx('extra');msg='EXTRA SHIP!';msgT=100;flash=.6}
 }
 
-function setupFlight(){
-  state='flight'; stageTimer=0; bullets=[];aliens=[];drops=[];particles=[];pickups=[];
-  ship.x=W*.18;ship.y=H*.5;ship.vx=0;ship.vy=0;ship.angle=Math.PI/2;ship.av=0;
+/* ---------------------------------------------------------------- SETUP */
+function makeAsteroid(x,y,ore=false,big=false){
+  const r=big?rnd(20,34):rnd(13,30);
+  return {x,y,r,vx:rnd(-.9,.15),vy:rnd(-.45,.45),rot:rnd(0,Math.PI*2),spin:rnd(-.035,.035),
+          mass:r*r,shape:Array.from({length:9},()=>rnd(.72,1.18)),ore};
+}
+function initStars(){
+  // Three parallax layers: far / mid / near.
+  stars=[];
+  [[60,.15,.8],[45,.4,1.4],[25,.9,2.2]].forEach(([n,d,s])=>{for(let i=0;i<n;i++)stars.push({x:rnd(0,W),y:rnd(0,H),d,s})});
+}
+
+function setupFlight(respawn=false){
+  state='flight'; stageTimer=0; bullets=[];ebullets=[];aliens=[];drops=[];particles=[];ufo=null;
+  ship.x=W*.2;ship.y=H*.55;ship.vx=0;ship.vy=0;ship.angle=Math.PI/2;ship.av=0;
   const p=planets[planetIndex];
-  // Trip length is in seconds (not screen widths) so every device gets the same run.
-  const trip=60*(36+planetIndex*3);
-  planet={x:W+600,y:H*.5,r:70+planetIndex*14,startX:W+600};
-  planet.speed=(planet.startX-W*.55)/trip;
-  stars=Array.from({length:120},()=>({x:rnd(0,W),y:rnd(0,H),s:rnd(.5,2.2)}));
-  gasRings=[];asteroids=[];
-  // A few rocks already on screen so the opening isn't empty.
-  for(let i=0;i<3+planetIndex;i++) asteroids.push(makeAsteroid(rnd(W*.55,W+40),rnd(55,H-55),Math.random()<.17));
-  spawnT=60;ringT=180;
-  msg='REACH '+p.name+' • GOLD ROCKS HOLD GEMS';msgT=200;
+  if(!respawn){
+    // Long, arcade-style trip: ~85 s at cruising speed, quicker if you push ahead.
+    dist=0;tripDist=FLY_BASE*60*(85+planetIndex*8);
+    asteroids=[];gasRings=[];pickups=[];nextRock=150;nextRing=600;section=0;beatT=60;
+    planet={r:70+planetIndex*14};
+    initStars();
+  } else {
+    asteroids=asteroids.filter(a=>a.x>W*.8);
+  }
+  ready('PLANET '+(planetIndex+1),'DEEP SPACE  >>  '+p.name);
 }
 
 function setupLander(){
-  state='lander';stageTimer=0;bullets=[];drops=[];particles=[];pickups=[];
-  ship.x=W*.5;ship.y=78;
-  ship.vx=rnd(-.18,.18);
-  ship.vy=.03;
-  ship.angle=rnd(-.06,.06);
-  ship.av=0;
+  state='lander';stageTimer=0;bullets=[];ebullets=[];drops=[];particles=[];pickups=[];ufo=null;
+  ship.x=W*.5;ship.y=110;
+  ship.vx=rnd(-.18,.18);ship.vy=.03;ship.angle=rnd(-.06,.06);ship.av=0;
 
-  // Pad is off to one side, and smaller on later planets.
+  // Main pad off to one side; a small x3 bonus pad on the other side (classic Lunar Lander risk/reward).
   padHalf=62-planetIndex*5;
-  padX=rnd(W*.2,W*.8);
-  if(Math.abs(padX-W*.5)<W*.15) padX+=W*.15*(padX<W*.5?-1:1);
-  padX=clamp(padX,padHalf+24,W-padHalf-24);
+  let px=rnd(W*.2,W*.8);
+  if(Math.abs(px-W*.5)<W*.15) px+=W*.15*(px<W*.5?-1:1);
+  px=clamp(px,padHalf+24,W-padHalf-24);
+  pads=[{x:px,half:padHalf,mult:1}];
+  const bh=Math.max(25,padHalf*.6);
+  let bx=px<W/2?rnd(W*.68,W*.9):rnd(W*.1,W*.32);
+  bx=clamp(bx,bh+16,W-bh-16);
+  if(Math.abs(bx-px)>padHalf+bh+50) pads.push({x:bx,half:bh,mult:3});
 
-  // A few small drifting rocks cross the descent zone, forcing course corrections.
   asteroids=Array.from({length:3+Math.min(3,planetIndex)},(_,i)=>{
     const r=rnd(8,15);
     const fromLeft=i%2===0;
     return {
-      x:fromLeft?rnd(-80,-20):rnd(W+20,W+80),
-      y:rnd(H*.22,H*.58),
-      r,
-      vx:fromLeft?rnd(.32,.65):rnd(-.65,-.32),
-      vy:rnd(-.035,.035),
+      x:fromLeft?rnd(-80,-20):rnd(W+20,W+80),y:rnd(H*.25,H*.58),r,
+      vx:fromLeft?rnd(.32,.65):rnd(-.65,-.32),vy:rnd(-.035,.035),
       rot:rnd(0,Math.PI*2),spin:rnd(-.028,.028),mass:r*r,
       shape:Array.from({length:8},()=>rnd(.76,1.16))
     };
   });
-
-  msg='LUNAR DESCENT — FIND THE PAD, WATCH FOR ROCKS';msgT=180;
+  ready(planets[planetIndex].name,'LUNAR DESCENT');
 }
 
 const GROUND=()=>H*.78;
-// Lander terrain: rough, but flattens out around the landing pad.
 function terrainY(x){
   const rough=GROUND()+Math.sin(x*.021+planetIndex)*38+Math.sin(x*.057+planetIndex*2)*16;
-  const k=clamp((Math.abs(x-padX)-padHalf)/90,0,1);
+  let k=1;
+  for(const p of pads) k=Math.min(k,clamp((Math.abs(x-p.x)-p.half)/90,0,1));
   return GROUND()*(1-k)+rough*k;
 }
 function padY(){return GROUND()-8}
@@ -238,20 +326,20 @@ function surfaceTerrainY(worldX){
 
 function setupSurface(){
   state='surface';stageTimer=0; bullets=[];aliens=[];drops=[];particles=[];
-  cameraX=0;o2=100;
-  // You start beside the ship you just landed, walk out, and come back.
-  ship.x=190;ship.y=surfaceTerrainY(190)-32; ship.vx=0; ship.vy=0; ship.grounded=true; ship.face=1;
   const p=planets[planetIndex];
   aliens=Array.from({length:p.aliens},(_,i)=>({x:520+i*(surfaceWidth-700)/Math.max(1,p.aliens-1)+rnd(-80,80),y:0,w:26,h:32,hp:1+Math.floor(planetIndex/2),dir:Math.random()<.5?-1:1,t:rnd(0,200)}));
   for(let i=0;i<p.gems;i++) drops.push({type:'ore',x:420+(i+.5)*(surfaceWidth-560)/p.gems+rnd(-60,60),y:0,hp:2+Math.floor(planetIndex/2),taken:false});
   for(let i=0;i<p.fuel;i++) drops.push({type:'fuel',x:rnd(500,surfaceWidth-120),y:0,taken:false});
   drops.push({type:'ship',x:110,y:0,taken:false});
-  msg='SHOOT ORE • GET 2 GEMS • RETURN BEFORE O₂ RUNS OUT';msgT=200;
+  respawnSurface();
+}
+function respawnSurface(){
+  state='surface';bullets=[];particles=[];cameraX=0;o2=100;
+  ship.x=190;ship.y=surfaceTerrainY(190)-32;ship.vx=0;ship.vy=0;ship.grounded=true;ship.face=1;
+  ready(planets[planetIndex].name,'SHOOT ORE  •  BRING BACK 2 GEMS');
 }
 
-function setupUpgrade(){
-  state='upgrade';stageTimer=0;upSel=0;
-}
+function setupUpgrade(){state='upgrade';stageTimer=0;upSel=0;}
 
 function buildCavern(){
   const R=rng(runSeed+planetIndex*977);
@@ -265,7 +353,6 @@ function buildCavern(){
   }
   cavernNodes.push({a:cavernHeight-120,c:.5,w:.24});
   cavernNodes.push({a:cavernHeight,c:.5,w:.42});
-
   cavernSpikes=[];
   for(let i=0,sa=230;sa<cavernHeight-240;i++,sa+=86+R()*30){
     const long=R()<.28+planetIndex*.04;
@@ -273,16 +360,12 @@ function buildCavern(){
     if(R()<.15) cavernSpikes.push({a:sa+34,side:R()<.5?'right':'left',len:26+R()*18,half:15});
   }
 }
-
-// Cavern geometry lives in a fixed virtual width so the gap is the same on every screen.
 const CAVE_VW=620;
 function cavernBounds(alt){
   const a=clamp(alt,0,cavernHeight);
   let lo=cavernNodes[0],hi=cavernNodes[cavernNodes.length-1];
   for(let i=0;i<cavernNodes.length-1;i++){
-    if(a>=cavernNodes[i].a && a<=cavernNodes[i+1].a){
-      lo=cavernNodes[i];hi=cavernNodes[i+1];break;
-    }
+    if(a>=cavernNodes[i].a && a<=cavernNodes[i+1].a){lo=cavernNodes[i];hi=cavernNodes[i+1];break;}
   }
   const span=Math.max(1,hi.a-lo.a);
   const t=clamp((a-lo.a)/span,0,1);
@@ -293,7 +376,6 @@ function cavernBounds(alt){
   return {left:center-half,right:center+half};
 }
 function spikeLen(sp,b){return Math.min(sp.len,(b.right-b.left)*.3)}
-
 function cavernCollisionBounds(alt){
   const b=cavernBounds(alt);
   let left=b.left,right=b.right;
@@ -301,8 +383,7 @@ function cavernCollisionBounds(alt){
     const d=Math.abs(alt-sp.a);
     if(d<sp.half){
       const inset=spikeLen(sp,cavernBounds(sp.a))*(1-d/sp.half);
-      if(sp.side==='left') left+=inset;
-      else right-=inset;
+      if(sp.side==='left') left+=inset; else right-=inset;
     }
   }
   return {left,right};
@@ -313,31 +394,33 @@ function setupTakeoff(){
   buildCavern();
   takeoffAlt=28;takeoffV=0;takeoffCam=0;lavaAlt=-420;
   ship.x=W*.5;ship.y=H*.82-28;ship.vx=0;ship.vy=0;ship.angle=0;ship.av=0;
-  msg='ESCAPE THE CAVERN — THE LAVA IS RISING';msgT=210;
+  ready('ESCAPE!','THE LAVA IS RISING');
 }
 
 function completePlanet(){
-  banked += gems; gems=0; score += 1000 + planetIndex*500;
+  banked += gems; gems=0;
+  addScore(1000+planetIndex*500);
   if(planetIndex+1>bestPlanet){bestPlanet=planetIndex+1;store('SM4000_BEST',bestPlanet)}
-  if(planetIndex===planets.length-1){state='win';endAt=performance.now();saveHi();return}
+  if(planetIndex===planets.length-1){endRun(true);return}
   setupUpgrade();
 }
 
 function saveHi(){if(score>high){high=score;store('SM4000_HI',high)}}
+function endRun(win){
+  saveHi();endWin=win;endAt=performance.now();
+  if(score>table[table.length-1].s){state='initials';entry={l:[0,0,0],i:0};sfx('jingle')}
+  else state=win?'win':'gameover';
+}
 
 /* --------------------------------------------------------------- DAMAGE */
-// Single place for all hull damage: invulnerability frames, shake, sound, death.
 function damage(deathText,hitText,boom=true){
   if(ship.inv>0) return false;
-  ship.hull--; ship.inv=75; shake=9; sfx('hit');
+  ship.hull--; ship.inv=75; shake=9; flash=.35; sfx('hit');
   if(ship.hull<=0){ lose(deathText,boom); return true; }
   msg=hitText+' — HULL '+ship.hull; msgT=70; return true;
 }
 
-function rotatePoint(x,y,a){
-  const c=Math.cos(a), ss=Math.sin(a);
-  return {x:x*c-y*ss,y:x*ss+y*c};
-}
+function rotatePoint(x,y,a){const c=Math.cos(a),ss=Math.sin(a);return {x:x*c-y*ss,y:x*ss+y*c}}
 
 function spawnShipExplosion(x,y,angle=0){
   const pieces=[
@@ -350,42 +433,40 @@ function spawnShipExplosion(x,y,angle=0){
   debris=pieces.map(p=>{
     const mx=(p[0]+p[2])/2,my=(p[1]+p[3])/2;
     const rp=rotatePoint(mx,my,angle);
-    return {
-      x1:p[0]-mx,y1:p[1]-my,x2:p[2]-mx,y2:p[3]-my,
-      x:x+rp.x,y:y+rp.y,angle:angle+rnd(-.5,.5),
-      vx:rnd(-3.2,3.2)+rp.x*.03,vy:rnd(-4.2,-.8)+rp.y*.03,
-      va:rnd(-.22,.22),life:70+rnd(0,25)
-    };
+    return {x1:p[0]-mx,y1:p[1]-my,x2:p[2]-mx,y2:p[3]-my,x:x+rp.x,y:y+rp.y,angle:angle+rnd(-.5,.5),
+      vx:rnd(-3.2,3.2)+rp.x*.03,vy:rnd(-4.2,-.8)+rp.y*.03,va:rnd(-.22,.22),life:70+rnd(0,25)};
   });
-  burst(x,y,34);
-  shake=14;
-  sfx('hit');
+  burst(x,y,40);
 }
 
-function startShipExplosion(reason){
+// Every death goes through a short "exploding" beat, then you lose a ship and respawn.
+function lose(reason,shipBoom=false){
+  if(state==='exploding') return;
   deathReason=reason||'MISSION LOST';
-  saveHi();
   explosionScene=state;
-  spawnShipExplosion(ship.x,ship.y,ship.angle||0);
-  explosionTimer=90;
-  msg=deathReason;msgT=90;
+  debris=[];
+  if(shipBoom && (state==='flight'||state==='lander'||state==='takeoff')) spawnShipExplosion(ship.x,ship.y,ship.angle||0);
+  else burst(ship.x,ship.y,30);
+  sfx('boom');shake=14;flash=1;
+  explosionTimer=100;
   state='exploding';
 }
-
-function lose(reason,shipBoom=false){
-  if(shipBoom && (state==='flight'||state==='lander'||state==='takeoff')){
-    startShipExplosion(reason);
-    return;
-  }
-  deathReason=reason||'MISSION LOST';
-  saveHi();state='gameover';endAt=performance.now();msg=deathReason;
+function afterDeath(){
+  lives--;
+  if(lives<=0){endRun(false);return}
+  ship.hull=ship.maxHull; ship.fuel=Math.max(ship.fuel,ship.maxFuel*.6); ship.inv=150;
+  const sc=explosionScene;
+  if(sc==='flight') setupFlight(true);
+  else if(sc==='lander') setupLander();
+  else if(sc==='takeoff') setupTakeoff();
+  else respawnSurface();
+  msg=deathReason+' — '+lives+' SHIP'+(lives>1?'S':'')+' LEFT';msgT=150;
 }
 
 function burst(x,y,n=12){
   for(let i=0;i<n;i++) particles.push({x,y,vx:rnd(-2.2,2.2),vy:rnd(-2.2,2.2),life:rnd(20,55)});
 }
 function exhaust(){
-  // Engine particles from the bell, in screen space.
   const s=Math.sin(ship.angle),co=Math.cos(ship.angle);
   particles.push({x:ship.x-s*20,y:ship.y+co*20,vx:-s*2+rnd(-.4,.4)+ship.vx*.5,vy:co*2+rnd(-.4,.4),life:rnd(12,22)});
 }
@@ -393,7 +474,7 @@ function exhaust(){
 function splitAsteroid(a, impactVX=0, impactVY=0){
   if(a.r<15){
     a.dead=true;burst(a.x,a.y,10);
-    if(a.ore) pickups.push({x:a.x,y:a.y,vx:-1.1,t:0});
+    if(a.ore) pickups.push({x:a.x,y:a.y,vx:-.3,t:0});
     return;
   }
   a.dead=true;
@@ -403,21 +484,20 @@ function splitAsteroid(a, impactVX=0, impactVY=0){
     const speed=rnd(1.0,2.0);
     asteroids.push({
       x:a.x+Math.cos(ang)*nr,y:a.y+Math.sin(ang)*nr,r:nr,
-      vx:a.vx+Math.cos(ang)*speed+impactVX*.15,
-      vy:a.vy+Math.sin(ang)*speed+impactVY*.15,
+      vx:a.vx+Math.cos(ang)*speed+impactVX*.15,vy:a.vy+Math.sin(ang)*speed+impactVY*.15,
       rot:rnd(0,Math.PI*2),spin:rnd(-.06,.06),mass:nr*nr,
-      shape:Array.from({length:8},()=>rnd(.72,1.18)),
-      ore:a.ore && i===0   // only one fragment carries the ore on
+      shape:Array.from({length:8},()=>rnd(.72,1.18)),ore:a.ore && i===0
     });
   }
   burst(a.x,a.y,16);
 }
 
 /* --------------------------------------------------------------- FLIGHT */
+// Side-scrolling like Scramble/Defender: the world always moves; pushing right speeds it up.
 function updateFlight(){
   stageTimer++;
-  const thrust=.105*ship.thrust;
-  const turn=.045;
+  const prog=clamp(dist/tripDist,0,1);
+  const thrust=.09*ship.thrust, turn=.05;
   if(keys.ArrowLeft) ship.angle-=turn;
   if(keys.ArrowRight) ship.angle+=turn;
   if(keys.ArrowUp && ship.fuel>0){
@@ -428,66 +508,80 @@ function updateFlight(){
   }
   if(actionPressed && bullets.length<4+ship.laser){
     sfx('shoot');
-    const sp=7.5+ship.laser*.6;
-    bullets.push({
-      mode:'space',x:ship.x+Math.sin(ship.angle)*20,y:ship.y-Math.cos(ship.angle)*20,
-      vx:ship.vx+Math.sin(ship.angle)*sp,vy:ship.vy-Math.cos(ship.angle)*sp,life:75
-    });
+    const sp=8+ship.laser*.6;
+    bullets.push({x:ship.x+Math.sin(ship.angle)*20,y:ship.y-Math.cos(ship.angle)*20,
+      vx:ship.vx+Math.sin(ship.angle)*sp,vy:ship.vy-Math.cos(ship.angle)*sp,life:75});
   }
 
-  ship.vx*=.994;ship.vy*=.994;
+  ship.vx*=.985;ship.vy*=.985;
+  ship.vx=clamp(ship.vx,-3,3.2);ship.vy=clamp(ship.vy,-4,4);
   ship.x+=ship.vx;ship.y+=ship.vy;
-  ship.y=clamp(ship.y,25,H-25);ship.x=clamp(ship.x,20,W*.72);
-  // Steady drift toward the planet; flying forward gets you there sooner.
-  planet.x-=planet.speed+Math.max(0,ship.vx)*.35;
+  ship.y=clamp(ship.y,90,H-25);
+  // The ship never hits an invisible wall: past the push line the world scrolls instead.
+  const pushLine=W*.5;
+  let push=0;
+  if(ship.x>pushLine){push=ship.x-pushLine;ship.x=pushLine}
+  if(ship.x<30){ship.x=30;if(ship.vx<0)ship.vx=0}
+  scroll=FLY_BASE+push;
+  dist+=scroll;
+  const remaining=tripDist-dist;
 
-  // Rocks and gas rings arrive in waves from the right.
-  if(planet.x>W*.85){
-    if(--spawnT<=0){asteroids.push(makeAsteroid(W+40,rnd(55,H-55),Math.random()<.17));spawnT=rnd(70,110)-planetIndex*9}
-    if(--ringT<=0){gasRings.push({x:W+40,y:rnd(85,H-85),r:24,vx:rnd(-.25,.18),wobble:rnd(0,6),taken:false});ringT=rnd(260,380)}
+  // Sections: open space → asteroid field → dense belt → planet approach.
+  const sec=prog<.22?0:prog<.55?1:prog<.85?2:3;
+  if(sec!==section){
+    section=sec;
+    msg=['','ASTEROID FIELD','WARNING — DENSE BELT AHEAD','PLANET APPROACH'][sec];msgT=130;
+    if(sec===2) sfx('warn');
   }
+  if(remaining>W*1.1){
+    nextRock-=scroll;
+    if(nextRock<=0){
+      const gap=[240,150,95][Math.min(sec,2)]*(1-planetIndex*.07);
+      asteroids.push(makeAsteroid(W+40,rnd(100,H-40),Math.random()<.17,sec===2));
+      nextRock=gap*rnd(.6,1.4);
+    }
+    nextRing-=scroll;
+    if(nextRing<=0){gasRings.push({x:W+40,y:rnd(110,H-80),r:24,vx:rnd(-.2,.2),wobble:rnd(0,6),taken:false});nextRing=rnd(800,1200)}
+    if(!ufo && sec>=1 && Math.random()<.0022+planetIndex*.0007) spawnUfo();
+  }
+
+  // Asteroids-style heartbeat that speeds up as you close on the planet.
+  if(--beatT<=0){beat^=1;sfx(beat?'beat1':'beat0');beatT=Math.round(46-26*prog)}
 
   for(const b of bullets){b.x+=b.vx;b.y+=b.vy;b.life--}
   bullets=bullets.filter(b=>b.life>0&&b.x>-50&&b.x<W+100&&b.y>-50&&b.y<H+50);
 
   gasRings.forEach(g=>{
-    g.x+=g.vx-1.05;
-    g.wobble+=.025;
+    g.x+=g.vx-scroll;g.wobble+=.025;
     if(!g.taken && Math.hypot(ship.x-g.x,ship.y-g.y)<g.r+15){
-      g.taken=true;
-      ship.fuel=Math.min(ship.maxFuel,ship.fuel+6);
-      score+=25;sfx('fuel');msg='+6 FUEL — GAS RING';msgT=55;
+      g.taken=true;ship.fuel=Math.min(ship.maxFuel,ship.fuel+6);
+      addScore(25,g.x,g.y);sfx('fuel');msg='+6 FUEL';msgT=45;
     }
   });
   gasRings=gasRings.filter(g=>!g.taken && g.x>-80);
 
   pickups.forEach(pk=>{
-    pk.x+=pk.vx;pk.t++;
-    if(Math.hypot(ship.x-pk.x,ship.y-pk.y)<24){pk.taken=true;gems++;score+=200;sfx('gem');msg='+ GEM';msgT=45}
+    pk.x+=pk.vx-scroll;pk.t++;
+    if(Math.hypot(ship.x-pk.x,ship.y-pk.y)<26){pk.taken=true;gems++;addScore(200,pk.x,pk.y);sfx('gem');msg='+ GEM';msgT=45}
   });
   pickups=pickups.filter(pk=>!pk.taken&&pk.x>-30);
 
-  asteroids.forEach(a=>{a.x+=a.vx-1.25;a.y+=a.vy;a.rot+=a.spin});
+  asteroids.forEach(a=>{a.x+=a.vx-scroll;a.y+=a.vy;a.rot+=a.spin});
 
-  // Asteroid-to-asteroid elastic collisions.
   for(let i=0;i<asteroids.length;i++){
     const a=asteroids[i]; if(a.dead)continue;
     for(let j=i+1;j<asteroids.length;j++){
       const b=asteroids[j]; if(b.dead)continue;
-      const dx=b.x-a.x,dy=b.y-a.y,dist=Math.hypot(dx,dy),min=a.r+b.r;
-      if(dist>0&&dist<min){
-        const nx=dx/dist,ny=dy/dist;
-        const overlap=min-dist;
+      const dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy),min=a.r+b.r;
+      if(d>0&&d<min){
+        const nx=dx/d,ny=dy/d,overlap=min-d;
         a.x-=nx*overlap*.5;a.y-=ny*overlap*.5;b.x+=nx*overlap*.5;b.y+=ny*overlap*.5;
         const rvx=b.vx-a.vx,rvy=b.vy-a.vy,along=rvx*nx+rvy*ny;
         if(along<0){
           const impulse=-(1.75)*along/(1/a.mass+1/b.mass);
           const ix=impulse*nx,iy=impulse*ny;
           a.vx-=ix/a.mass;a.vy-=iy/a.mass;b.vx+=ix/b.mass;b.vy+=iy/b.mass;
-          a.spin+=rnd(-.01,.01);b.spin+=rnd(-.01,.01);
-          if(Math.abs(along)>2.25 && (a.r>18||b.r>18)){
-            (a.r>b.r?splitAsteroid(a,rvx,rvy):splitAsteroid(b,-rvx,-rvy));
-          }
+          if(Math.abs(along)>2.25 && (a.r>18||b.r>18)) (a.r>b.r?splitAsteroid(a,rvx,rvy):splitAsteroid(b,-rvx,-rvy));
         }
       }
     }
@@ -498,12 +592,19 @@ function updateFlight(){
     for(const a of asteroids){
       if(a.dead)continue;
       if(Math.hypot(b.x-a.x,b.y-a.y)<a.r+3){
-        b.life=0;score+=50;sfx('hit');
+        b.life=0;addScore(a.r>=15?20:50,a.x,a.y);sfx('pop');
         splitAsteroid(a,b.vx,b.vy);
         break;
       }
     }
+    if(ufo && b.life>0 && Math.abs(b.x-ufo.x)<24 && Math.abs(b.y-ufo.y)<14){
+      b.life=0;ufo.hp--;sfx('pop');burst(ufo.x,ufo.y,8);
+      if(ufo.hp<=0){addScore(500,ufo.x,ufo.y);sfx('boom');burst(ufo.x,ufo.y,30);pickups.push({x:ufo.x,y:ufo.y,vx:-.3,t:0});ufo=null;shake=6}
+    }
   }
+
+  updateUfo();
+  if(state!=='flight')return;
 
   for(const a of asteroids){
     if(a.dead||state!=='flight')continue;
@@ -512,27 +613,48 @@ function updateFlight(){
       ship.vx+=(dx/d)*2.2;ship.vy+=(dy/d)*2.2;
       if(ship.inv===0){
         splitAsteroid(a,ship.vx,ship.vy);burst(ship.x,ship.y,20);
-        score=Math.max(0,score-150);
         damage('HULL DESTROYED — ASTEROID IMPACT','ASTEROID HIT');
       }
     }
   }
   if(state!=='flight')return;
   asteroids=asteroids.filter(a=>!a.dead && a.x>-120 && a.y>-100 && a.y<H+100);
-  if(ship.fuel<=0 && Math.hypot(ship.vx,ship.vy)<.15){lose('OUT OF FUEL — ADRIFT IN SPACE');return}
-  const approach=Math.max(0,1-(planet.x-W*.52)/(W*.9));
-  const visibleR=planet.r*(1+approach*1.35);
-  const distToPlanet=Math.hypot(ship.x-planet.x,ship.y-planet.y);
-  if((planet.x-visibleR < W*.60 && distToPlanet < visibleR+W*.38) || planet.x < W*.42) setupLander();
+  if(remaining<=0) setupLander();
+}
+
+function spawnUfo(){
+  ufo={x:W+60,y:rnd(140,H*.6),baseY:0,t:0,hp:2+Math.floor(planetIndex/2),fireT:90};
+  ufo.baseY=ufo.y;msg='ALIEN SAUCER!';msgT=70;
+}
+function updateUfo(){
+  if(ufo){
+    ufo.t++;
+    // Hovers on the right for ~10 s, then bolts off left.
+    if(ufo.t<600){const tx=W*.76+Math.sin(ufo.t*.012)*W*.1;ufo.x+=(tx-ufo.x)*.025}
+    else ufo.x-=4+scroll;
+    ufo.y=ufo.baseY+Math.sin(ufo.t*.045)*60;
+    if(ufo.t%22===0) beep(ufo.t%44?700:560,.08,'triangle',.018);
+    if(--ufo.fireT<=0 && ufo.x<W){
+      const dx=ship.x-ufo.x,dy=ship.y-ufo.y,d=Math.hypot(dx,dy)||1,sp=3.1+planetIndex*.3;
+      ebullets.push({x:ufo.x,y:ufo.y,vx:dx/d*sp,vy:dy/d*sp,life:220});sfx('alien');
+      ufo.fireT=rnd(70,110)-planetIndex*8;
+    }
+    if(Math.abs(ship.x-ufo.x)<28 && Math.abs(ship.y-ufo.y)<20 && ship.inv===0){
+      burst(ship.x,ship.y,20);if(damage('HULL DESTROYED — SAUCER COLLISION','SAUCER HIT')&&state!=='flight')return;
+    }
+    if(ufo && ufo.x<-80) ufo=null;
+  }
+  ebullets.forEach(b=>{b.x+=b.vx;b.y+=b.vy;b.life--;
+    if(Math.abs(b.x-ship.x)<11&&Math.abs(b.y-ship.y)<14&&ship.inv===0&&state==='flight'){b.life=0;burst(ship.x,ship.y,14);damage('HULL DESTROYED — SAUCER FIRE','SAUCER FIRE')}
+  });
+  ebullets=ebullets.filter(b=>b.life>0&&b.x>-20&&b.x<W+20&&b.y>-20&&b.y<H+20);
 }
 
 /* --------------------------------------------------------------- ESCAPE */
 function updateTakeoff(){
   stageTimer++;
   const launchAlt=28;
-  const gravity=.0055+planetIndex*.00045;
-  takeoffV-=gravity;
-
+  takeoffV-=.0055+planetIndex*.00045;
   const torque=.0016;
   if(keys.ArrowLeft) ship.av-=torque;
   if(keys.ArrowRight) ship.av+=torque;
@@ -547,19 +669,14 @@ function updateTakeoff(){
     ship.fuel-=.035;
     if(stageTimer%2===0) exhaust();
   }
-
-  ship.vx*=.992;
-  takeoffV*=.999;
-  ship.x+=ship.vx;
-  takeoffAlt+=takeoffV;
-
+  ship.vx*=.992;takeoffV*=.999;
+  ship.x+=ship.vx;takeoffAlt+=takeoffV;
   if(takeoffAlt<launchAlt){takeoffAlt=launchAlt;takeoffV=0;}
 
   const baseY=H*.82;
   const targetCam=Math.max(0,takeoffAlt-H*.38);
   const prevCam=takeoffCam;
   takeoffCam+=(targetCam-takeoffCam)*.09;
-  // Keep screen-space particles fixed to the world as the camera climbs.
   const dCam=takeoffCam-prevCam;
   particles.forEach(p=>p.y+=dCam);
   ship.y=baseY-(takeoffAlt-takeoffCam);
@@ -567,28 +684,21 @@ function updateTakeoff(){
   const b=cavernCollisionBounds(takeoffAlt);
   const margin=15;
   if(ship.x-margin<b.left || ship.x+margin>b.right){
-    // Always bounce off the wall; only lose hull when not invulnerable.
     const mid=(b.left+b.right)/2;
     ship.vx=(mid-ship.x)*.045;
     ship.x=clamp(ship.x,b.left+margin,b.right-margin);
     if(ship.inv===0){
-      takeoffV*=.55;
-      burst(ship.x,ship.y,18);
+      takeoffV*=.55;burst(ship.x,ship.y,18);
       if(damage('HULL DESTROYED — CAVERN IMPACT','CAVERN IMPACT') && state!=='takeoff') return;
     }
   }
 
-  // Lava starts rising after two seconds.
   if(stageTimer>120 && takeoffAlt<cavernHeight) lavaAlt+=.5+planetIndex*.09;
   if(takeoffAlt-24<lavaAlt){lose('CAUGHT BY THE LAVA',true);return}
-
-  if(ship.fuel<=0 && takeoffAlt<cavernHeight*.92 && takeoffV<=0){
-    lose('OUT OF FUEL — TRAPPED IN THE CAVERN');
-    return;
-  }
+  if(ship.fuel<=0 && takeoffAlt<cavernHeight*.92 && takeoffV<=0){lose('OUT OF FUEL — TRAPPED IN THE CAVERN');return}
 
   if(takeoffAlt>=cavernHeight+H*.22){
-    score+=600;
+    addScore(600+Math.max(0,(takeoffAlt-lavaAlt)|0));
     planetIndex++;
     setupFlight();
   }
@@ -597,19 +707,14 @@ function updateTakeoff(){
 /* --------------------------------------------------------------- LANDER */
 function updateLander(){
   stageTimer++;
-  // Intentionally floaty, 1980s Lunar Lander-style physics.
-  const g=.0048 + planetIndex*.00065;
-  ship.vy+=g;
-
+  ship.vy+=.0048 + planetIndex*.00065;
   const torque=.00125;
   if(keys.ArrowLeft) ship.av-=torque;
   if(keys.ArrowRight) ship.av+=torque;
-  const selfRight=-Math.sin(ship.angle)*.0009;
-  ship.av+=selfRight;
+  ship.av+=-Math.sin(ship.angle)*.0009;
   ship.av*=.989;
   ship.angle+=ship.av;
 
-  // Out of fuel = engine dead, not instant death. Gravity does the rest.
   if(keys.ArrowUp && ship.fuel>0){
     const power=.0145*ship.thrust;
     ship.vx+=Math.sin(ship.angle)*power;
@@ -617,53 +722,41 @@ function updateLander(){
     ship.fuel=Math.max(0,ship.fuel-.028);
     if(stageTimer%3===0) exhaust();
   }
-
-  ship.vx*=.9995;
-  ship.vy*=.9998;
-  ship.x+=ship.vx;
-  ship.y+=ship.vy;
+  ship.vx*=.9995;ship.vy*=.9998;
+  ship.x+=ship.vx;ship.y+=ship.vy;
   ship.x=clamp(ship.x,22,W-22);
-  if(ship.y<20){ship.y=20;ship.vy=Math.max(0,ship.vy)}
+  if(ship.y<90){ship.y=90;ship.vy=Math.max(0,ship.vy)}
 
   for(const a of asteroids){
     a.x+=a.vx;a.y+=a.vy;a.rot+=a.spin;
-    if(a.vx>0 && a.x>W+50){a.x=-50;a.y=rnd(H*.22,H*.58)}
-    if(a.vx<0 && a.x<-50){a.x=W+50;a.y=rnd(H*.22,H*.58)}
+    if(a.vx>0 && a.x>W+50){a.x=-50;a.y=rnd(H*.25,H*.58)}
+    if(a.vx<0 && a.x<-50){a.x=W+50;a.y=rnd(H*.25,H*.58)}
     if(Math.hypot(ship.x-a.x,ship.y-a.y)<a.r+14){
       const dx=ship.x-a.x,dy=ship.y-a.y,d=Math.hypot(dx,dy)||1;
-      ship.vx+=(dx/d)*.42;
-      ship.vy+=(dy/d)*.18;
+      ship.vx+=(dx/d)*.42;ship.vy+=(dy/d)*.18;
       if(ship.inv===0){
-        a.vx*=-1;
-        a.vy+=rnd(-.04,.04);
-        burst(ship.x,ship.y,14);
+        a.vx*=-1;a.vy+=rnd(-.04,.04);burst(ship.x,ship.y,14);
         if(damage('HULL DESTROYED — ASTEROID DURING LANDING','ASTEROID CLIP') && state!=='lander') return;
       }
     }
   }
 
-  const onPad=Math.abs(ship.x-padX)<padHalf-10;
-  const groundY=onPad?padY():terrainY(ship.x);
-
+  const pad=pads.find(p=>Math.abs(ship.x-p.x)<p.half-10);
+  const groundY=pad?padY():terrainY(ship.x);
   if(ship.y+22>=groundY){
-    const vertical=Math.abs(ship.vy);
-    const horizontal=Math.abs(ship.vx);
+    const vertical=Math.abs(ship.vy),horizontal=Math.abs(ship.vx);
     const upright=Math.abs(Math.atan2(Math.sin(ship.angle),Math.cos(ship.angle)));
-
-    if(onPad && vertical<.72 && horizontal<.50 && upright<.24){
-      score+=500+Math.round((1-vertical/.72)*250);
+    if(pad && vertical<.72 && horizontal<.50 && upright<.24){
+      const pts=(500+Math.round((1-vertical/.72)*250))*pad.mult;
+      addScore(pts,ship.x,ship.y-40);
       sfx('land');shake=3;
       ship.angle=0;ship.av=0;
       setupSurface();
-    } else if(!onPad) {
-      lose('BAD LANDING — CRASHED ON ROUGH GROUND',true);
-    } else if(vertical>=.72) {
-      lose('BAD LANDING — DESCENT TOO FAST',true);
-    } else if(horizontal>=.50) {
-      lose('BAD LANDING — TOO MUCH SIDEWAYS SPEED',true);
-    } else {
-      lose('BAD LANDING — SHIP NOT LEVEL',true);
-    }
+      if(pad.mult>1){msg='x'+pad.mult+' BONUS PAD — '+pts+' POINTS';msgT=130}
+    } else if(!pad) lose('BAD LANDING — CRASHED ON ROUGH GROUND',true);
+    else if(vertical>=.72) lose('BAD LANDING — DESCENT TOO FAST',true);
+    else if(horizontal>=.50) lose('BAD LANDING — TOO MUCH SIDEWAYS SPEED',true);
+    else lose('BAD LANDING — SHIP NOT LEVEL',true);
   }
 }
 
@@ -676,26 +769,17 @@ function updateSurface(){
   ship.vx += move*.34;
   ship.vx *= ship.grounded?.72:.94;
   ship.vx=clamp(ship.vx,-speed,speed);
-
-  if(keys.ArrowUp && ship.grounded){
-    ship.vy=-5.8-planetIndex*.08;
-    ship.grounded=false;
-  }
+  if(keys.ArrowUp && ship.grounded){ship.vy=-5.8-planetIndex*.08;ship.grounded=false;beep(300,.08,'square',.02,200)}
   ship.vy+=.23+planetIndex*.012;
   ship.x=clamp(ship.x+ship.vx,30,surfaceWidth-30);
   ship.y+=ship.vy;
-
   const ground=surfaceTerrainY(ship.x)-32;
-  if(ship.y>=ground){
-    ship.y=ground;ship.vy=0;ship.grounded=true;
-  } else ship.grounded=false;
-
+  if(ship.y>=ground){ship.y=ground;ship.vy=0;ship.grounded=true;} else ship.grounded=false;
   cameraX=clamp(ship.x-W*.35,0,Math.max(0,surfaceWidth-W));
 
   if(actionPressed && bullets.filter(b=>!b.enemy).length<4+ship.laser){
-    const dir=ship.face;
-    sfx('shoot');
-    bullets.push({mode:'surface',x:ship.x+dir*16,y:ship.y-5,vx:dir*(7+ship.laser*.8),vy:0,life:70});
+    const dir=ship.face;sfx('shoot');
+    bullets.push({x:ship.x+dir*16,y:ship.y-5,vx:dir*(7+ship.laser*.8),vy:0,life:70});
   }
   bullets.forEach(b=>{b.x+=b.vx;b.y+=(b.vy||0);b.life--});
   bullets=bullets.filter(b=>b.life>0&&b.x>cameraX-30&&b.x<cameraX+W+30);
@@ -707,7 +791,7 @@ function updateSurface(){
     if(a.x<=40||a.x>=surfaceWidth-40) a.dir*=-1;
     if(a.t%(120-planetIndex*10)===0 && Math.abs(a.x-ship.x)<420){
       sfx('alien');
-      bullets.push({mode:'surface',enemy:true,x:a.x,y:a.y-8,vx:(ship.x<a.x?-1:1)*(2.4+planetIndex*.3),vy:0,life:180});
+      bullets.push({enemy:true,x:a.x,y:a.y-8,vx:(ship.x<a.x?-1:1)*(2.4+planetIndex*.3),vy:0,life:180});
     }
   });
 
@@ -722,13 +806,12 @@ function updateSurface(){
       let used=false;
       for(const a of aliens){
         if(a.hp>0 && Math.abs(b.x-a.x)<18 && Math.abs(b.y-a.y)<22){
-          a.hp-=ship.laser;b.life=0;score+=100;sfx('hit');used=true;
-          if(a.hp<=0){burst(a.x,a.y,12);score+=150}
+          a.hp-=ship.laser;b.life=0;sfx('pop');used=true;
+          if(a.hp<=0){burst(a.x,a.y,12);addScore(250,a.x,a.y-30,true)}
           break;
         }
       }
       if(used)continue;
-      // Ore rocks sit on the ground and crack open into gems.
       for(const d of drops){
         if(d.type!=='ore'||d.taken)continue;
         if(Math.abs(b.x-d.x)<18){
@@ -747,23 +830,23 @@ function updateSurface(){
     d.y=surfaceTerrainY(d.x)-11-(d.pop||0);
     if(Math.abs(d.x-ship.x)<24 && Math.abs(d.y-ship.y)<40){
       d.taken=true;
-      if(d.type==='gem'){gems++;score+=200;sfx('gem');msg='+ GEM ('+gems+' THIS PLANET)';msgT=45}
-      if(d.type==='fuel'){ship.fuel=Math.min(ship.maxFuel,ship.fuel+18);score+=80;sfx('fuel');msg='+ FUEL';msgT=45}
+      if(d.type==='gem'){gems++;addScore(200,d.x,d.y-30,true);sfx('gem');msg='+ GEM ('+gems+' THIS PLANET)';msgT=45}
+      if(d.type==='fuel'){ship.fuel=Math.min(ship.maxFuel,ship.fuel+18);addScore(80,d.x,d.y-30,true);sfx('fuel');msg='+ FUEL';msgT=45}
     }
   }
   const exit=drops.find(d=>d.type==='ship');
   if(Math.abs(exit.x-ship.x)<42 && ship.grounded){
-    if(aliens.length===0 || gems>=2){completePlanet();return}
+    if(aliens.length===0 || gems>=2){addScore(Math.round(o2)*10);completePlanet();return}
     else if(msgT<=0 && stageTimer>60){msg='NEED '+(2-gems)+' MORE GEM'+(2-gems>1?'S':'')+' — OR CLEAR ALL ALIENS';msgT=80}
   }
   o2-=100/(60*(80-planetIndex*4));
   if(o2<25 && stageTimer%50===0) sfx('alarm');
-  if(o2<=0) lose('OXYGEN DEPLETED — DIDN\'T MAKE IT BACK');
+  if(o2<=0) lose('OXYGEN DEPLETED');
 }
 
 /* ------------------------------------------------------------- UPGRADES */
 function upgradeLayout(){
-  const bw=Math.min(380,W*.86),bx=(W-bw)/2,rh=Math.min(54,H*.075);
+  const bw=Math.min(380,W*.86),bx=(W-bw)/2,rh=Math.min(54,H*.072);
   const rows=[
     {type:'refuel',label:'REFUEL TO FULL',cost:1},
     {type:'fuel',  label:'FUEL TANK +20',cost:2},
@@ -808,66 +891,67 @@ c.addEventListener('pointerdown',e=>{
 function blinking(){return ship.inv>0 && (ship.inv>>2)%2===1}
 
 function drawShip(x,y,s=1,angle=0,thrusting=false,leftJet=false,rightJet=false,player=false){
-  if(player && blinking()) return;
+  if(player && (hideShip||blinking())) return;
   ctx.save();ctx.translate(x,y);ctx.rotate(angle);ctx.scale(s,s);mono();
   ctx.lineWidth=2;
-
   ctx.beginPath();
-  ctx.moveTo(0,-18);
-  ctx.lineTo(11,-8);
-  ctx.lineTo(13,6);
-  ctx.lineTo(8,12);
-  ctx.lineTo(-8,12);
-  ctx.lineTo(-13,6);
-  ctx.lineTo(-11,-8);
-  ctx.closePath();
-  ctx.stroke();
-
+  ctx.moveTo(0,-18);ctx.lineTo(11,-8);ctx.lineTo(13,6);ctx.lineTo(8,12);
+  ctx.lineTo(-8,12);ctx.lineTo(-13,6);ctx.lineTo(-11,-8);ctx.closePath();ctx.stroke();
   ctx.beginPath();ctx.arc(0,-6,5,Math.PI,0);ctx.stroke();
   line(0,-18,0,-24,1.5);
   ctx.beginPath();ctx.arc(0,-25,1.5,0,Math.PI*2);ctx.stroke();
-
   line(-5,12,-3,17,2);line(5,12,3,17,2);line(-3,17,3,17,2);
-
-  line(-8,10,-15,22,2);
-  line(8,10,15,22,2);
-  line(-15,22,-21,24,2);
-  line(15,22,21,24,2);
-  line(-10,13,-15,22,1);
-  line(10,13,15,22,1);
-
+  line(-8,10,-15,22,2);line(8,10,15,22,2);line(-15,22,-21,24,2);line(15,22,21,24,2);
+  line(-10,13,-15,22,1);line(10,13,15,22,1);
   if(thrusting){
-    ctx.beginPath();
-    ctx.moveTo(-3,18);
-    ctx.lineTo(0,31+rnd(2,10));
-    ctx.lineTo(3,18);
-    ctx.stroke();
-    ctx.globalAlpha=.35;
-    ctx.beginPath();
-    ctx.moveTo(-1.5,18);
-    ctx.lineTo(0,39+rnd(0,7));
-    ctx.lineTo(1.5,18);
-    ctx.stroke();
-    ctx.globalAlpha=1;
+    ctx.strokeStyle='#ffb347';
+    ctx.beginPath();ctx.moveTo(-3,18);ctx.lineTo(0,31+rnd(2,10));ctx.lineTo(3,18);ctx.stroke();
+    ctx.globalAlpha=.45;
+    ctx.beginPath();ctx.moveTo(-1.5,18);ctx.lineTo(0,39+rnd(0,7));ctx.lineTo(1.5,18);ctx.stroke();
+    ctx.globalAlpha=1;mono();
   }
   if(leftJet){ctx.beginPath();ctx.moveTo(11,-4);ctx.lineTo(19,-1+rnd(-2,2));ctx.lineTo(12,3);ctx.stroke()}
   if(rightJet){ctx.beginPath();ctx.moveTo(-11,-4);ctx.lineTo(-19,-1+rnd(-2,2));ctx.lineTo(-12,3);ctx.stroke()}
   ctx.restore();
 }
 
-function drawRock(a,alpha=.72,tint=null){
+function drawRock(a,alpha=.8,tint=null){
   ctx.save();ctx.translate(a.x,a.y);ctx.rotate(a.rot);mono(alpha);ctx.lineWidth=2;
   if(tint) ctx.strokeStyle=tint;
   ctx.beginPath();
   a.shape.forEach((m,i)=>{const ang=i/a.shape.length*Math.PI*2, rr=a.r*m, x=Math.cos(ang)*rr, y=Math.sin(ang)*rr;i?ctx.lineTo(x,y):ctx.moveTo(x,y)});
   ctx.closePath();ctx.stroke();
   ctx.globalAlpha=.45;ctx.beginPath();ctx.arc(-a.r*.2,-a.r*.1,a.r*.22,0,Math.PI*2);ctx.stroke();
-  if(tint){ctx.globalAlpha=.8;ctx.fillStyle=tint;ctx.fillRect(a.r*.15,a.r*.1,3,3);ctx.fillRect(-a.r*.35,a.r*.3,2,2)}
+  if(tint){ctx.globalAlpha=.9;ctx.fillStyle=tint;ctx.fillRect(a.r*.15,a.r*.1,3,3);ctx.fillRect(-a.r*.35,a.r*.3,2,2)}
   ctx.globalAlpha=1;ctx.restore();
 }
 function drawGem(x,y,tint){
   ctx.strokeStyle=tint;ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x,y-10);ctx.lineTo(x+8,y);ctx.lineTo(x,y+10);ctx.lineTo(x-8,y);ctx.closePath();ctx.stroke();
   ctx.globalAlpha=.3;ctx.fillStyle=tint;ctx.fill();ctx.globalAlpha=1;
+}
+function drawUfo(u){
+  ctx.save();ctx.translate(u.x,u.y);ctx.strokeStyle='#ff6bd6';ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(-24,2);ctx.lineTo(-12,-6);ctx.lineTo(12,-6);ctx.lineTo(24,2);ctx.lineTo(12,9);ctx.lineTo(-12,9);ctx.closePath();ctx.stroke();
+  line(-24,2,24,2,1.5);
+  ctx.beginPath();ctx.arc(0,-6,8,Math.PI,0);ctx.stroke();
+  ctx.fillStyle='#ff6bd6';
+  for(let i=0;i<4;i++) if(((u.t>>3)+i)%2) ctx.fillRect(-15+i*10,4,3,3);
+  ctx.restore();
+}
+function drawPlanet(x,y,r,tint,rings){
+  ctx.save();
+  ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fillStyle='#070707';ctx.fill();ctx.clip();
+  // Vector-style hatching.
+  ctx.strokeStyle=tint;ctx.globalAlpha=.22;
+  for(let yy=y-r;yy<y+r;yy+=7) line(x-r,yy,x+r,yy,1);
+  ctx.globalAlpha=.45;ctx.lineWidth=2;
+  ctx.beginPath();ctx.arc(x-r*.25,y-r*.15,r*.26,0,Math.PI*2);ctx.stroke();
+  ctx.beginPath();ctx.arc(x+r*.35,y+r*.3,r*.12,0,Math.PI*2);ctx.stroke();
+  ctx.restore();
+  ctx.strokeStyle=tint;ctx.lineWidth=3;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.stroke();
+  if(rings){ctx.save();ctx.translate(x,y);ctx.rotate(-.3);ctx.globalAlpha=.75;ctx.lineWidth=2;
+    ctx.beginPath();ctx.ellipse(0,0,r*1.75,r*.32,0,0,Math.PI*2);ctx.stroke();
+    ctx.globalAlpha=.35;ctx.beginPath();ctx.ellipse(0,0,r*1.5,r*.25,0,0,Math.PI*2);ctx.stroke();ctx.restore()}
 }
 
 function updateExplosion(){
@@ -878,9 +962,9 @@ function updateExplosion(){
     d.angle+=d.va;d.life--;
   });
   debris=debris.filter(d=>d.life>0);
-  if(explosionTimer<=0){state='gameover';endAt=performance.now()}
+  if(explosionScene==='flight') asteroids.forEach(a=>{a.x+=a.vx-FLY_BASE;a.y+=a.vy;a.rot+=a.spin});
+  if(explosionTimer<=0) afterDeath();
 }
-
 function drawDebris(){
   debris.forEach(d=>{
     ctx.save();ctx.translate(d.x,d.y);ctx.rotate(d.angle);
@@ -889,116 +973,129 @@ function drawDebris(){
     ctx.restore();
   });
 }
+function drawExplosion(){
+  hideShip=true;
+  if(explosionScene==='flight')drawFlight();
+  else if(explosionScene==='lander')drawLander();
+  else if(explosionScene==='takeoff')drawTakeoff();
+  else drawSurface();
+  hideShip=false;
+  drawDebris();
+  ctx.fillStyle='#ff6b6b';arc(deathReason,W/2,H*.3,16);
+}
 
 function drawLanderGround(){
   const p=planets[planetIndex];
   ctx.beginPath();ctx.moveTo(0,H);
   for(let x=0;x<=W+12;x+=12)ctx.lineTo(x,terrainY(x));
-  ctx.lineTo(W,H);ctx.closePath();
-  ctx.fillStyle='#0c0c0c';ctx.fill();
+  ctx.lineTo(W,H);ctx.closePath();ctx.fillStyle='#0c0c0c';ctx.fill();
   ctx.strokeStyle=p.tint;ctx.lineWidth=2;
   ctx.beginPath();for(let x=0;x<=W+12;x+=12)x?ctx.lineTo(x,terrainY(x)):ctx.moveTo(x,terrainY(x));ctx.stroke();
-  mono();ctx.fillRect(padX-padHalf,padY(),padHalf*2,7);
-  line(padX-padHalf+7,padY()+7,padX-padHalf+17,padY()+18);line(padX+padHalf-7,padY()+7,padX+padHalf-17,padY()+18);
-  // Blinking pad beacons.
-  if((stageTimer>>4)%2){ctx.fillStyle=p.tint;ctx.fillRect(padX-padHalf-2,padY()-6,4,4);ctx.fillRect(padX+padHalf-2,padY()-6,4,4)}
-}
-
-function drawExplosion(){
-  ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);
-  if(explosionScene==='flight'){
-    stars.forEach(st=>{ctx.globalAlpha=.25+st.s*.15;ctx.fillStyle='#fff';ctx.fillRect(st.x,st.y,st.s,st.s)});
-    ctx.globalAlpha=1;
-    const p=planets[planetIndex];
-    ctx.strokeStyle=p.tint;ctx.lineWidth=2;
-    ctx.beginPath();ctx.arc(planet.x,planet.y,planet.r,0,Math.PI*2);ctx.stroke();
-  } else if(explosionScene==='lander'){
-    drawLanderGround();
-  } else if(explosionScene==='takeoff'){
-    drawCavern();
+  for(const pd of pads){
+    mono();ctx.fillRect(pd.x-pd.half,padY(),pd.half*2,7);
+    line(pd.x-pd.half+7,padY()+7,pd.x-pd.half+17,padY()+18);line(pd.x+pd.half-7,padY()+7,pd.x+pd.half-17,padY()+18);
+    if((stageTimer>>4)%2){ctx.fillStyle=pd.mult>1?ORE:p.tint;ctx.fillRect(pd.x-pd.half-2,padY()-6,4,4);ctx.fillRect(pd.x+pd.half-2,padY()-6,4,4)}
+    if(pd.mult>1){ctx.fillStyle=ORE;text('x'+pd.mult,pd.x,padY()+34,13,'center')}
   }
-  drawDebris();
-  particles.forEach(pt=>{mono(pt.life/55);ctx.fillRect(pt.x,pt.y,2,2)});
-  drawHUD();
-  ctx.fillStyle='#ff6b6b';text(deathReason,W/2,H*.2,18,'center');mono();
 }
 
 function drawAstronaut(x,y,face){
-  if(blinking()) return;
+  if(hideShip||blinking()) return;
   ctx.save();ctx.translate(x,y);mono();ctx.lineWidth=2;
   ctx.strokeRect(-7,-15,14,18);ctx.beginPath();ctx.arc(0,-21,8,0,Math.PI*2);ctx.stroke();
-  // Visor shows which way you're facing (and firing).
-  ctx.fillRect(face>0?1:-6,-24,5,4);
-  line(-6,3,-9,14);line(6,3,9,14);line(-7,-8,-13,-1);line(7,-8,13,-1);
-  // Gun arm on the facing side.
+  ctx.fillStyle='#7fd8ff';ctx.fillRect(face>0?1:-6,-24,5,4);mono();
+  const step=Math.abs(ship.vx)>.3&&ship.grounded?Math.sin(stageTimer*.3)*3:0;
+  line(-6,3,-9+step,14);line(6,3,9-step,14);line(-7,-8,-13,-1);line(7,-8,13,-1);
   line(face*7,-6,face*17,-6,2);
   ctx.restore();
 }
-
-function drawAlien(x,y){
-  ctx.save();ctx.translate(x,y);mono();ctx.lineWidth=2;
+function drawAlien(x,y,t){
+  ctx.save();ctx.translate(x,y);ctx.strokeStyle='#8dff8d';ctx.fillStyle='#8dff8d';ctx.lineWidth=2;
   ctx.beginPath();ctx.arc(0,-12,9,Math.PI,0);ctx.lineTo(9,2);ctx.lineTo(-9,2);ctx.closePath();ctx.stroke();
-  ctx.fillRect(-4,-12,2,2);ctx.fillRect(2,-12,2,2);line(-7,2,-11,12);line(7,2,11,12);line(-4,2,-5,13);line(4,2,5,13);
+  ctx.fillRect(-4,-12,2,2);ctx.fillRect(2,-12,2,2);
+  // Two-frame walk, Space Invaders style.
+  if((t>>4)%2){line(-7,2,-11,12);line(7,2,11,12);line(-4,2,-5,13);line(4,2,5,13)}
+  else{line(-7,2,-9,12);line(7,2,9,12);line(-4,2,-2,13);line(4,2,2,13)}
   ctx.restore();
 }
 
 function bar(x,y,w,frac,label,warn){
-  mono(.5);ctx.strokeRect(x,y,w,8);
+  mono(.5);ctx.lineWidth=1;ctx.strokeRect(x,y,w,8);
   ctx.fillStyle=warn?'#ff6b6b':'rgba(245,245,245,.95)';ctx.fillRect(x+1,y+1,(w-2)*clamp(frac,0,1),6);
-  mono();text(label,x,y-4,11);
+  mono();text(label,x,y-3,10);
 }
 
+// Arcade HUD: 1UP / HI-SCORE / ships on top, gauges underneath.
 function drawHUD(){
   ctx.globalAlpha=1;
-  ctx.fillStyle='#090909aa';ctx.fillRect(10,10,Math.min(600,W-20),58);
-  mono();text('SPACE MINER 4000 '+VERSION+'  •  PLANET '+(planetIndex+1)+'/'+planets.length,22,30,13);
-  text('SCORE '+score,22,56,15);
-  const lowFuel=ship.fuel<20;
-  bar(150,48,90,ship.fuel/ship.maxFuel,'FUEL '+Math.max(0,ship.fuel|0)+'/'+ship.maxFuel,lowFuel);
-  mono();text('GEMS '+gems+(banked?' +'+banked+' BANKED':''),258,56,W<640?12:14);
-  text('HULL '+'■'.repeat(Math.max(0,ship.hull))+'□'.repeat(Math.max(0,ship.maxHull-ship.hull)),W<640?22:430,W<640?84:56,14);
-  if(state==='surface') bar(W<640?150:520,W<640?78:48,70,o2/100,'O₂ '+Math.max(0,o2|0)+'%',o2<25);
+  const small=W<640, hs=small?12:14;
+  ctx.fillStyle='#ff5050';text('1UP',18,22,hs);text('HI-SCORE',W/2,22,hs,'center');
+  mono();text(pad6(score),18,44,hs+4);text(pad6(Math.max(high,score)),W/2,44,hs+4,'center');
+  for(let i=0;i<Math.min(6,lives-1);i++) drawShip(W-22-i*22,30,.55,0);
+  const lowFuel=ship.fuel<20 && (stageTimer>>4)%2;
+  bar(18,66,small?80:110,ship.fuel/ship.maxFuel,'FUEL',lowFuel);
+  let x=small?112:146;
+  mono();text('HULL',x,63,10);
+  for(let i=0;i<ship.maxHull;i++){ if(i<ship.hull) ctx.fillRect(x+i*13,66,10,8); else ctx.strokeRect(x+i*13,66,10,8)}
+  x+=ship.maxHull*13+16;
+  ctx.fillStyle=ORE;text('GEMS '+gems+(banked?'+'+banked:''),x,74,small?11:13);
+  if(state==='surface'||explosionScene==='surface'&&state==='exploding') bar(W-(small?90:140),66,small?72:120,o2/100,'O2',o2<25&&(stageTimer>>3)%2);
+}
+
+function drawPopups(){
+  for(const p of popups){ctx.globalAlpha=Math.min(1,p.t/20);ctx.fillStyle=ORE;text(p.txt,p.world?p.x-cameraX:p.x,p.y,13,'center')}
+  ctx.globalAlpha=1;
+}
+
+function drawStars(){
+  for(const s of stars){
+    const len=Math.max(s.s,scroll*s.d*2.5);
+    ctx.globalAlpha=.25+s.d*.6;mono();
+    ctx.fillRect(s.x,s.y,len,s.s*.8);
+  }
+  ctx.globalAlpha=1;
 }
 
 function drawFlight(){
-  ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);mono(.7);
-  stars.forEach(s=>{ctx.globalAlpha=.35+s.s*.2;ctx.fillRect((s.x-stageTimer*s.s*.08+W*10)%W,s.y,s.s,s.s)});ctx.globalAlpha=1;
+  ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);
+  drawStars();
   const p=planets[planetIndex];
+  const remaining=tripDist-dist;
+  if(remaining<W*1.6){
+    const approach=clamp(1-remaining/(W*1.2),0,1);
+    const pr=planet.r*(1+approach*1.35);
+    drawPlanet(W*.62+remaining,H*.5,pr,p.tint,planetIndex%2===1);
+  }
   gasRings.forEach(g=>{
     ctx.save();ctx.translate(g.x,g.y);ctx.rotate(Math.sin(g.wobble)*.12);
-    ctx.strokeStyle='rgba(220,245,245,.58)';ctx.lineWidth=3;
+    ctx.strokeStyle='#7fffe6';ctx.globalAlpha=.75;ctx.lineWidth=3;
     ctx.beginPath();ctx.ellipse(0,0,g.r,g.r*.58,0,0,Math.PI*2);ctx.stroke();
-    ctx.globalAlpha=.28;ctx.lineWidth=7;
+    ctx.globalAlpha=.3;ctx.lineWidth=7;
     ctx.beginPath();ctx.ellipse(0,0,g.r*.72,g.r*.42,0,0,Math.PI*2);ctx.stroke();
     ctx.restore();ctx.globalAlpha=1;
   });
-  asteroids.forEach(a=>drawRock(a,.72,a.ore?'#ffd36b':null));
-  pickups.forEach(pk=>drawGem(pk.x,pk.y+Math.sin(pk.t*.1)*3,'#ffd36b'));
+  asteroids.forEach(a=>drawRock(a,.8,a.ore?ORE:null));
+  pickups.forEach(pk=>drawGem(pk.x,pk.y+Math.sin(pk.t*.1)*3,ORE));
+  if(ufo) drawUfo(ufo);
   mono();bullets.forEach(b=>ctx.fillRect(b.x-4,b.y-1,9,2));
-  const approach=Math.max(0,1-(planet.x-W*.52)/(W*.9));
-  const pr=planet.r*(1+approach*1.35);
-  ctx.strokeStyle=p.tint;ctx.fillStyle='#080808';ctx.lineWidth=3;ctx.beginPath();ctx.arc(planet.x,planet.y,pr,0,Math.PI*2);ctx.fill();ctx.stroke();
-  ctx.globalAlpha=.35;ctx.strokeStyle=p.tint;ctx.beginPath();ctx.arc(planet.x-pr*.2,planet.y-pr*.1,pr*.28,0,Math.PI*2);ctx.stroke();ctx.globalAlpha=1;
+  ctx.fillStyle='#ff6bd6';ebullets.forEach(b=>ctx.fillRect(b.x-2,b.y-2,4,4));
   particles.forEach(pt=>{mono(pt.life/40);ctx.fillRect(pt.x,pt.y,2,2)});
-  drawShip(ship.x,ship.y,1,ship.angle,keys.ArrowUp&&ship.fuel>0,false,false,true);
+  drawShip(ship.x,ship.y,1,ship.angle,keys.ArrowUp&&ship.fuel>0&&state==='flight',false,false,true);
   drawHUD();
-  mono();text('FLY TO '+p.name,W/2,100,16,'center');
-  // Progress to the planet.
-  const prog=clamp(1-(planet.x-W*.55)/(planet.startX-W*.55),0,1);
-  const bw=Math.min(320,W*.5),bx=(W-bw)/2;
-  mono(.4);ctx.strokeRect(bx,112,bw,6);ctx.fillStyle=p.tint;ctx.fillRect(bx+1,113,(bw-2)*prog,4);
+  // Distance to the planet, arcade-style.
+  const prog=clamp(dist/tripDist,0,1);
+  const bw=Math.min(320,W*.5),bx=(W-bw)/2,by=H-(W<900?100:30);
+  mono(.4);ctx.lineWidth=1;ctx.strokeRect(bx,by,bw,6);ctx.fillStyle=p.tint;ctx.fillRect(bx+1,by+1,(bw-2)*prog,4);
+  mono(.8);text('DIST',bx-8,by+7,11,'right');ctx.fillStyle=p.tint;text(p.name,bx+bw+8,by+7,11,'left');
+  drawShip(bx+bw*prog,by+3,.35,Math.PI/2);
 }
 
 function drawCavern(){
   const p=planets[planetIndex];
-  const baseY=H*.82;
-  const step=14;
-  const leftPts=[],rightPts=[];
+  const baseY=H*.82,step=14,leftPts=[],rightPts=[];
   for(let sy=-40;sy<=H+40;sy+=step){
-    const worldAlt=takeoffCam+(baseY-sy);
-    const b=cavernBounds(worldAlt);
-    leftPts.push([b.left,sy]);
-    rightPts.push([b.right,sy]);
+    const b=cavernBounds(takeoffCam+(baseY-sy));
+    leftPts.push([b.left,sy]);rightPts.push([b.right,sy]);
   }
   ctx.fillStyle='#111';
   ctx.beginPath();ctx.moveTo(0,-40);leftPts.forEach(pt=>ctx.lineTo(pt[0],pt[1]));ctx.lineTo(0,H+40);ctx.closePath();ctx.fill();
@@ -1006,8 +1103,7 @@ function drawCavern(){
   ctx.strokeStyle=p.tint;ctx.lineWidth=2;
   ctx.beginPath();leftPts.forEach((pt,i)=>i?ctx.lineTo(pt[0],pt[1]):ctx.moveTo(pt[0],pt[1]));ctx.stroke();
   ctx.beginPath();rightPts.forEach((pt,i)=>i?ctx.lineTo(pt[0],pt[1]):ctx.moveTo(pt[0],pt[1]));ctx.stroke();
-
-  mono(.78);ctx.lineWidth=2;
+  mono(.85);ctx.lineWidth=2;
   for(const sp of cavernSpikes){
     const sy=baseY-(sp.a-takeoffCam);
     if(sy<-40||sy>H+40) continue;
@@ -1017,38 +1113,29 @@ function drawCavern(){
     else{ctx.moveTo(b.right,sy-sp.half);ctx.lineTo(b.right-L,sy);ctx.lineTo(b.right,sy+sp.half)}
     ctx.stroke();
   }
-
-  const padYScreen=baseY-(0-takeoffCam);
+  const padYScreen=baseY+takeoffCam;
   if(padYScreen>-30&&padYScreen<H+30){
-    mono();
-    ctx.fillRect(W*.5-55,padYScreen,110,7);
-    line(W*.5-48,padYScreen+7,W*.5-38,padYScreen+18,1.5);
-    line(W*.5+48,padYScreen+7,W*.5+38,padYScreen+18,1.5);
+    mono();ctx.fillRect(W*.5-55,padYScreen,110,7);
+    line(W*.5-48,padYScreen+7,W*.5-38,padYScreen+18,1.5);line(W*.5+48,padYScreen+7,W*.5+38,padYScreen+18,1.5);
   }
-
   if(takeoffAlt>cavernHeight*.72){
     const reveal=clamp((takeoffAlt-cavernHeight*.72)/(cavernHeight*.28),0,1);
-    ctx.globalAlpha=.15+.6*reveal;
-    mono();
+    ctx.globalAlpha=.15+.6*reveal;mono();
     for(let i=0;i<45;i++){
-      const sx=(i*83)%W;
-      const worldStar=cavernHeight+80+(i*61)%500;
-      const sy=baseY-(worldStar-takeoffCam);
+      const sx=(i*83)%W, sy=baseY-(cavernHeight+80+(i*61)%500-takeoffCam);
       if(sy>-20&&sy<H*.5)ctx.fillRect(sx,sy,1+(i%2),1+(i%2));
     }
     ctx.globalAlpha=1;
   }
-
-  // Rising lava.
   const ly=baseY-(lavaAlt-takeoffCam);
   if(ly<H+20){
-    ctx.fillStyle=p.tint;ctx.globalAlpha=.32;
+    const lava='#ff7a2f';
+    ctx.fillStyle=lava;ctx.globalAlpha=.35;
     ctx.beginPath();ctx.moveTo(0,H);
     for(let x=0;x<=W+16;x+=16)ctx.lineTo(x,ly+Math.sin(x*.05+stageTimer*.08)*5);
     ctx.lineTo(W,H);ctx.closePath();ctx.fill();
-    ctx.globalAlpha=.9;ctx.strokeStyle=p.tint;ctx.lineWidth=2;
+    ctx.globalAlpha=1;ctx.strokeStyle=lava;ctx.lineWidth=2;
     ctx.beginPath();for(let x=0;x<=W+16;x+=16)x?ctx.lineTo(x,ly+Math.sin(x*.05+stageTimer*.08)*5):ctx.moveTo(x,ly+Math.sin(stageTimer*.08)*5);ctx.stroke();
-    ctx.globalAlpha=1;
   }
 }
 
@@ -1056,40 +1143,39 @@ function drawTakeoff(){
   ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);
   drawCavern();
   particles.forEach(pt=>{mono(pt.life/40);ctx.fillRect(pt.x,pt.y,2,2)});
-  drawShip(ship.x,ship.y,1.05,ship.angle,keys.ArrowUp&&ship.fuel>0,keys.ArrowLeft,keys.ArrowRight,true);
+  drawShip(ship.x,ship.y,1.05,ship.angle,keys.ArrowUp&&ship.fuel>0&&state==='takeoff',keys.ArrowLeft,keys.ArrowRight,true);
   drawHUD();
-  mono();
-  text('PLANET ESCAPE',W/2,100,16,'center');
   const gap=Math.max(0,(takeoffAlt-lavaAlt)|0);
-  ctx.fillStyle=gap<200?'#ff6b6b':'rgba(245,245,245,1)';
-  text('ALT '+Math.min(100,Math.floor(takeoffAlt/cavernHeight*100))+'%   LAVA '+gap+' BELOW',W/2,122,13,'center');
+  ctx.fillStyle=gap<200&&(stageTimer>>3)%2?'#ff6b6b':'rgba(245,245,245,1)';
+  text('ALT '+Math.min(100,Math.floor(takeoffAlt/cavernHeight*100))+'%   LAVA '+gap+' BELOW',W/2,104,13,'center');
   mono();
-  if(takeoffAlt>=cavernHeight) text('CAVERN CLEARED — REACH OPEN SPACE',W/2,142,12,'center');
+  if(takeoffAlt>=cavernHeight) text('CAVERN CLEARED — REACH OPEN SPACE',W/2,124,12,'center');
 }
 
 function drawLander(){
   ctx.fillStyle='#060606';ctx.fillRect(0,0,W,H);
+  for(let i=0;i<50;i++){ctx.globalAlpha=.15+(i%4)*.08;mono();ctx.fillRect((i*137)%W,(i*71)%(H*.6),1.5,1.5)}ctx.globalAlpha=1;
   drawLanderGround();
-  asteroids.forEach(a=>drawRock(a,.72));
+  asteroids.forEach(a=>drawRock(a,.8));
   particles.forEach(pt=>{mono(pt.life/40);ctx.fillRect(pt.x,pt.y,2,2)});
-  drawShip(ship.x,ship.y,1.1,ship.angle,keys.ArrowUp&&ship.fuel>0,keys.ArrowLeft,keys.ArrowRight,true);
-  // Pad marker when you're far from it.
-  if(Math.abs(ship.x-padX)>padHalf){mono(.5);text('▼ PAD',padX,padY()-14,11,'center')}
-  drawHUD();mono();text('LANDER',W/2,100,16,'center');
-  // Readouts turn green when inside the safe limits.
+  drawShip(ship.x,ship.y,1.1,ship.angle,keys.ArrowUp&&ship.fuel>0&&state==='lander',keys.ArrowLeft,keys.ArrowRight,true);
+  const main=pads[0];
+  if(main && Math.abs(ship.x-main.x)>main.half){mono(.6);text('PAD',main.x,padY()-14,11,'center')}
+  drawHUD();
   const ang=Math.abs(Math.atan2(Math.sin(ship.angle),Math.cos(ship.angle)));
   const col=ok=>ctx.fillStyle=ok?'#7dff9a':'#ff6b6b';
-  col(Math.abs(ship.vy)<.72);text('V '+ship.vy.toFixed(2),W/2-100,122,13,'center');
-  col(Math.abs(ship.vx)<.5); text('H '+Math.abs(ship.vx).toFixed(2),W/2,122,13,'center');
-  col(ang<.24);              text('ANG '+Math.round(ang*57.3)+'°',W/2+100,122,13,'center');
-  mono();text('ALT '+Math.max(0,(padY()-ship.y-22)|0)+(ship.fuel<=0?'   ENGINE DEAD':''),W/2,142,12,'center');
+  col(Math.abs(ship.vy)<.72);text('V '+ship.vy.toFixed(2),W/2-100,104,13,'center');
+  col(Math.abs(ship.vx)<.5); text('H '+Math.abs(ship.vx).toFixed(2),W/2,104,13,'center');
+  col(ang<.24);              text('ANG '+Math.round(ang*57.3),W/2+100,104,13,'center');
+  mono();text('ALT '+Math.max(0,(padY()-ship.y-22)|0)+(ship.fuel<=0?'   ENGINE DEAD':''),W/2,124,12,'center');
 }
 
-const SURF_DRAW_OFF=17; // draw actors with their feet on the terrain line
+const SURF_DRAW_OFF=17;
 function drawSurface(){
   ctx.fillStyle='#060606';ctx.fillRect(0,0,W,H);
   const p=planets[planetIndex];
-  for(let i=0;i<10;i++){const x=((i*260-cameraX*.35)%(W+260)+W+260)%(W+260)-100;mono(.22);ctx.beginPath();ctx.arc(x,H*.54,50+(i%3)*18,Math.PI,0);ctx.stroke()}
+  for(let i=0;i<50;i++){ctx.globalAlpha=.15+(i%4)*.08;mono();ctx.fillRect(((i*137-cameraX*.1)%W+W)%W,(i*71)%(H*.5),1.5,1.5)}ctx.globalAlpha=1;
+  for(let i=0;i<10;i++){const x=((i*260-cameraX*.35)%(W+260)+W+260)%(W+260)-100;mono(.22);ctx.lineWidth=2;ctx.beginPath();ctx.arc(x,H*.54,50+(i%3)*18,Math.PI,0);ctx.stroke()}
   ctx.beginPath();ctx.moveTo(0,H);
   for(let x=0;x<=W+12;x+=12)ctx.lineTo(x,surfaceTerrainY(cameraX+x));
   ctx.lineTo(W,H);ctx.closePath();ctx.fillStyle='#0b0b0b';ctx.fill();
@@ -1101,44 +1187,41 @@ function drawSurface(){
     const x=d.x-cameraX;
     if(x<-60||x>W+60)return;
     const gy=surfaceTerrainY(d.x);
-    if(d.type==='gem')drawGem(x,d.y,p.tint);
-    if(d.type==='fuel'){mono();ctx.lineWidth=2;ctx.strokeRect(x-8,gy-21,16,20);text('F',x,gy-6,11,'center')}
+    if(d.type==='gem')drawGem(x,d.y,ORE);
+    if(d.type==='fuel'){ctx.strokeStyle='#7fffe6';ctx.fillStyle='#7fffe6';ctx.lineWidth=2;ctx.strokeRect(x-8,gy-21,16,20);text('F',x,gy-6,11,'center')}
     if(d.type==='ore'){
       if(!d.shape){d.shape=Array.from({length:9},()=>rnd(.75,1.15));d.rot=rnd(0,6)}
-      drawRock({x,y:gy-12,r:15,rot:d.rot,shape:d.shape},.85,p.tint);
+      drawRock({x,y:gy-12,r:15,rot:d.rot,shape:d.shape},.85,ORE);
     }
     if(d.type==='ship'){
       drawShip(x,gy-38,1.6,0,false);
-      if(Math.abs(ship.x-d.x)>120){mono(.6);text(gems>=2||aliens.length===0?'◀ SHIP READY':'SHIP',x,gy-90,11,'center')}
+      if(Math.abs(ship.x-d.x)>120){mono(.6);text(gems>=2||aliens.length===0?'SHIP READY':'SHIP',x,gy-90,11,'center')}
     }
   });
-  aliens.forEach(a=>{const x=a.x-cameraX;if(x>-40&&x<W+40)drawAlien(x,a.y+SURF_DRAW_OFF)});
-  bullets.forEach(b=>{if(b.enemy)ctx.fillStyle='#ff9b9b';else mono();ctx.fillRect(b.x-cameraX,b.y+SURF_DRAW_OFF,b.enemy?5:9,2)});
+  aliens.forEach(a=>{const x=a.x-cameraX;if(x>-40&&x<W+40)drawAlien(x,a.y+SURF_DRAW_OFF,a.t)});
+  bullets.forEach(b=>{if(b.enemy)ctx.fillStyle='#8dff8d';else mono();ctx.fillRect(b.x-cameraX,b.y+SURF_DRAW_OFF,b.enemy?5:9,2)});
   drawAstronaut(ship.x-cameraX,ship.y+SURF_DRAW_OFF,ship.face);
   particles.forEach(pt=>{mono(pt.life/55);ctx.fillRect(pt.x-cameraX,pt.y+SURF_DRAW_OFF,2,2)});
-  drawHUD();mono();text(p.name+'  •  GEMS '+gems+'/2 NEEDED  •  ALIENS '+aliens.length,W/2,104,14,'center');
+  drawHUD();mono();text('GEMS '+gems+'/2  •  ALIENS '+aliens.length,W/2,104,13,'center');
 }
 
 function drawUpgrade(){
   ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);mono();
   const L=upgradeLayout();
-
-  text('SHIP UPGRADE',W/2,H*.1,Math.min(32,W*.08),'center');
-  text('BANKED GEMS: '+banked,W/2,H*.1+30,18,'center');
-
+  ctx.fillStyle=ORE;arc('SHIP UPGRADE',W/2,H*.09,26);
+  mono();text('BANKED GEMS: '+banked,W/2,H*.09+32,16,'center');
   drawShip(L.bx+40,H*.25,2,0,false);
   const sx=L.bx+100;
   text('HULL '+ship.hull+' / '+ship.maxHull,sx,H*.2,15);
   text('FUEL '+(ship.fuel|0)+' / '+ship.maxFuel,sx,H*.2+22,15);
-  text('LASER '+ship.laser+'   THRUST '+ship.thrust.toFixed(2),sx,H*.2+44,15);
-  ctx.globalAlpha=.7;text('ESCAPE + NEXT FLIGHT USE ~'+(45+planetIndex*6)+' FUEL',sx,H*.2+66,12);ctx.globalAlpha=1;
-
+  text('LASER '+ship.laser+'  THRUST '+ship.thrust.toFixed(1),sx,H*.2+44,W<520?13:15);
+  ctx.globalAlpha=.7;text('NEXT LEG NEEDS ~'+(55+planetIndex*6)+' FUEL',sx,H*.2+66,12);ctx.globalAlpha=1;
   L.rows.forEach((r,i)=>{
     const ok=canBuy(r.type), sel=i===upSel;
     ctx.globalAlpha=ok?1:.4;
-    ctx.strokeStyle='#eee';ctx.lineWidth=sel?3:1.5;ctx.strokeRect(L.bx,r.y,L.bw,L.rh);
+    ctx.strokeStyle=sel?ORE:'#eee';ctx.lineWidth=sel?3:1.5;ctx.strokeRect(L.bx,r.y,L.bw,L.rh);
     mono(ok?1:.6);
-    text((sel?'▸ ':'')+r.label,L.bx+14,r.y+L.rh/2+6,15);
+    text((sel?'> ':'')+r.label,L.bx+14,r.y+L.rh/2+6,15);
     let info=r.cost+' GEM'+(r.cost>1?'S':'');
     if(r.type==='hull'&&ship.hull>=ship.maxHull) info='FULL';
     if(r.type==='refuel'&&ship.fuel>=ship.maxFuel-1) info='FULL';
@@ -1147,12 +1230,20 @@ function drawUpgrade(){
     text(info,L.bx+L.bw-14,r.y+L.rh/2+6,13,'right');
     ctx.globalAlpha=1;
   });
-
   const l=L.launch;
-  ctx.fillStyle='#eee';ctx.fillRect(l.x,l.y,l.w,l.h);
-  ctx.fillStyle='#050505';text('LAUNCH → '+planets[planetIndex+1].name,W/2,l.y+l.h/2+6,16,'center');
-  mono(.6);text('↑ ↓ SELECT • SPACE BUY • ENTER LAUNCH • OR TAP',W/2,l.y+l.h+24,12,'center');
+  ctx.strokeStyle=ORE;ctx.lineWidth=3;ctx.strokeRect(l.x,l.y,l.w,l.h);ctx.fillStyle='rgba(255,211,107,.12)';ctx.fillRect(l.x,l.y,l.w,l.h);
+  ctx.fillStyle=ORE;arc('LAUNCH > '+planets[planetIndex+1].name,W/2,l.y+l.h/2+7,16,'center',l.w-16);
+  mono(.6);text(W<520?'TAP, OR ↑↓ + SPACE / ENTER':'UP/DOWN SELECT • SPACE BUY • ENTER LAUNCH • OR TAP',W/2,l.y+l.h+24,11,'center');
   ctx.globalAlpha=.65;text(VERSION,W-18,H-18,12,'right');ctx.globalAlpha=1;
+}
+
+function drawTable(y,hl){
+  ctx.fillStyle='#ff5050';arc('HIGH SCORES',W/2,y,12);
+  table.forEach((r,i)=>{
+    const yy=y+24+i*22;
+    ctx.fillStyle=hl&&r.s===score&&r.s>0?ORE:'rgba(245,245,245,.9)';
+    text((i+1)+'.  '+r.n+'   '+pad6(r.s),W/2,yy,15,'center');
+  });
 }
 
 function drawTitle(){
@@ -1160,62 +1251,102 @@ function drawTitle(){
   for(let i=0;i<80;i++){const x=(i*97)%W,y=(i*53)%H;ctx.globalAlpha=.15+(i%5)*.08;ctx.fillRect(x,y,1+(i%2),1+(i%2))}ctx.globalAlpha=1;
   shootingStars.forEach(st=>{ctx.globalAlpha=Math.min(1,st.life/10);mono();line(st.x,st.y,st.x-st.vx*4,st.y-st.vy*4,1.5)});
   ctx.globalAlpha=1;
-  const big=Math.min(70,W*.15);
-  text('SPACE',W/2,H*.26,big,'center');
-  text('MINER 4000',W/2,H*.38,big,'center');
-  ctx.strokeStyle='#ff5050';line(W*.23,H*.42,W*.77,H*.42,3);
-  text('FLY • LAND • MINE • UPGRADE • ESCAPE',W/2,H*.50,17,'center');
-  const s=W<520?12:14;
-  text('FLIGHT / LANDER: ◀ ▶ ROTATE • ▲ THRUST',W/2,H*.57,s,'center');
-  text('SURFACE: ◀ ▶ WALK • ▲ JUMP • SHOOT ORE FOR GEMS',W/2,H*.61,s,'center');
-  text('SPACE / ● TO FIRE',W/2,H*.65,s,'center');
-  text('PRESS ANY KEY OR TAP TO LAUNCH',W/2,H*.74,W<520?16:21,'center');
-  text('HIGH SCORE '+high+(bestPlanet?'   •   FURTHEST PLANET '+bestPlanet+'/'+planets.length:''),W/2,H*.81,13,'center');
-  ctx.globalAlpha=.65;text(VERSION,W-18,H-18,12,'right');ctx.globalAlpha=1;
+  titleRocks.forEach(a=>drawRock(a,.35));
+  // Attract-mode ship drifting across.
+  drawShip((demoT*1.4)%(W+200)-100,H*.47+Math.sin(demoT*.03)*20,.9,Math.PI/2+Math.sin(demoT*.03)*.2,true);
+  ctx.fillStyle='#ffffff';arc('SPACE',W/2,H*.17,46);
+  ctx.fillStyle=ORE;arc('MINER 4000',W/2,H*.17+60,46);
+  ctx.strokeStyle='#ff5050';line(W*.2,H*.17+80,W*.8,H*.17+80,3);
+  mono();text('FLY • LAND • MINE • UPGRADE • ESCAPE',W/2,H*.17+108,W<520?10:15,'center');
+  drawTable(H*.54,false);
+  if((demoT>>5)%2===0){ctx.fillStyle='#ffffff';arc(matchMedia('(pointer:coarse)').matches?'TAP TO START':'PRESS ANY KEY',W/2,H*.5,16)}
+  mono(.75);
+  const s=W<520?10:13;
+  text(W<520?'◀ ▶ ROTATE  ▲ THRUST/JUMP  ● FIRE':'ROTATE ◀ ▶   THRUST / JUMP ▲   FIRE SPACE / ●',W/2,H*.54+150,s,'center');
+  text('EXTRA SHIP EVERY '+EXTRA_LIFE_EVERY+(W<520?'':'  •  C = CRT FILTER'),W/2,H*.54+172,s,'center');
+  if(bestPlanet) text('FURTHEST PLANET '+bestPlanet+'/'+planets.length,W/2,H*.54+194,s,'center');
+  ctx.globalAlpha=.6;text('© GUNPOWDER STUDIOS   '+VERSION,W/2,H-14,11,'center');ctx.globalAlpha=1;
+}
+
+function drawInitials(){
+  ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle=ORE;arc('NEW HIGH SCORE!',W/2,H*.22,24);
+  mono();text(pad6(score),W/2,H*.3,26,'center');
+  text('ENTER YOUR INITIALS',W/2,H*.4,16,'center');
+  const sz=Math.min(46,W*.12);
+  for(let i=0;i<3;i++){
+    const x=W/2+(i-1)*sz*1.6;
+    ctx.fillStyle=i===entry.i?ORE:'#fff';
+    arc(LETTERS[entry.l[i]]===' '?'_':LETTERS[entry.l[i]],x,H*.55,sz);
+    if(i===entry.i&&(stageTimer>>4)%2) ctx.fillRect(x-sz*.55,H*.55+12,sz*1.1,4);
+  }
+  mono(.7);text('▲ ▼ CHANGE LETTER   ▶ / ● NEXT   ◀ BACK',W/2,H*.7,W<520?11:14,'center');
 }
 
 function drawEnd(win){
-  ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);mono();
-  text(win?'BIG RED CONQUERED':'MISSION LOST',W/2,H*.32,Math.min(34,W*.08),'center');
-  if(!win){ctx.fillStyle='#ff6b6b';text(deathReason,W/2,H*.405,W<520?13:18,'center');mono();}
-  text('SCORE '+score,W/2,H*.49,26,'center');
-  text('HIGH SCORE '+Math.max(high,score),W/2,H*.54,18,'center');
-  text('REACHED PLANET '+(planetIndex+1)+' / '+planets.length+' — '+planets[Math.min(planetIndex,planets.length-1)].name,W/2,H*.59,14,'center');
-  if(canRestart()) text(win?'SPACE MINER STATUS: LEGEND — TAP TO PLAY AGAIN':'PRESS ANY KEY OR TAP TO TRY AGAIN',W/2,H*.7,W<520?13:18,'center');
-  ctx.globalAlpha=.65;text(VERSION,W-18,H-18,12,'right');ctx.globalAlpha=1;
+  ctx.fillStyle='#050505';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle=win?ORE:'#ff5050';arc(win?'BIG RED CONQUERED':'GAME OVER',W/2,H*.2,34);
+  if(!win){mono(.8);text(deathReason,W/2,H*.27,14,'center')}
+  mono();text('SCORE '+pad6(score),W/2,H*.35,22,'center');
+  text('REACHED PLANET '+(planetIndex+1)+' / '+planets.length+' — '+planets[Math.min(planetIndex,planets.length-1)].name,W/2,H*.4,13,'center');
+  drawTable(H*.5,true);
+  if(canRestart()&&(stageTimer>>5)%2===0){ctx.fillStyle='#fff';arc(win?'SPACE MINER STATUS: LEGEND':'PRESS ANY KEY',W/2,H*.85,14)}
 }
 
 function drawMessage(){
-  if(msgT<=0)return;
+  if(msgT<=0||readyT>0)return;
   ctx.globalAlpha=Math.min(1,msgT/20);ctx.fillStyle='#000c';
-  const mw=Math.min(W*.9,Math.max(W*.6,msg.length*9+40));
-  ctx.fillRect((W-mw)/2,H*.18,mw,40);mono();text(msg,W/2,H*.18+26,W<520?12:15,'center');ctx.globalAlpha=1;
+  const mw=Math.min(W*.92,Math.max(W*.5,msg.length*9+40));
+  ctx.fillRect((W-mw)/2,H*.2,mw,36);mono();text(msg,W/2,H*.2+25,W<520?12:14,'center');ctx.globalAlpha=1;
+}
+function drawReady(){
+  if(readyT<=0)return;
+  ctx.fillStyle='rgba(0,0,0,.55)';ctx.fillRect(0,H*.36,W,H*.22);
+  ctx.fillStyle=ORE;arc(readyA,W/2,H*.43,26);
+  mono();text(readyB,W/2,H*.48,15,'center');
+  if((readyT>>3)%2){ctx.fillStyle='#ff5050';arc('READY!',W/2,H*.54,18)}
 }
 
 /* ----------------------------------------------------------------- LOOP */
-// Fixed 60 Hz simulation step so the game plays the same on 60/120/144 Hz screens.
 function update(){
-  if(state==='flight')updateFlight();
+  if(readyT>0){readyT--;}
+  else if(state==='flight')updateFlight();
   else if(state==='lander')updateLander();
   else if(state==='takeoff')updateTakeoff();
   else if(state==='surface')updateSurface();
-  else if(state==='exploding')updateExplosion();
-  else if(state==='title'){
-    if(Math.random()<.018 && shootingStars.length<3)
-      shootingStars.push({x:rnd(W*.1,W*.75),y:rnd(20,H*.42),vx:rnd(8,13),vy:rnd(2.5,5),life:rnd(24,40)});
-    shootingStars.forEach(st=>{st.x+=st.vx;st.y+=st.vy;st.life--});
-    shootingStars=shootingStars.filter(st=>st.life>0&&st.x<W+80);
+  if(state==='exploding')updateExplosion();
+  if(isMenu()){
+    stageTimer++;demoT++;
+    if(state==='title'){
+      if(Math.random()<.018 && shootingStars.length<3)
+        shootingStars.push({x:rnd(W*.1,W*.75),y:rnd(20,H*.42),vx:rnd(8,13),vy:rnd(2.5,5),life:rnd(24,40)});
+      shootingStars.forEach(st=>{st.x+=st.vx;st.y+=st.vy;st.life--});
+      shootingStars=shootingStars.filter(st=>st.life>0&&st.x<W+80);
+      if(!titleRocks.length) titleRocks=Array.from({length:7},()=>makeAsteroid(rnd(0,W),rnd(0,H)));
+      titleRocks.forEach(a=>{a.x+=a.vx-.6;a.y+=a.vy*.5;a.rot+=a.spin;if(a.x<-40)a.x=W+40;if(a.y<-40)a.y=H+40;if(a.y>H+40)a.y=-40});
+    }
   }
-
   particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vx*=.98;p.vy*=.98;p.life--});
   particles=particles.filter(p=>p.life>0);
-  if(ship.inv>0) ship.inv--;
+  popups.forEach(p=>{p.y-=.6;p.t--});popups=popups.filter(p=>p.t>0);
+  if(ship.inv>0 && readyT<=0) ship.inv--;
   if(msgT>0) msgT--;
   shake*=.85; if(shake<.3) shake=0;
-  const flying=state==='flight'||state==='lander'||state==='takeoff';
+  flash*=.85; if(flash<.02) flash=0;
+  const flying=(state==='flight'||state==='lander'||state==='takeoff')&&readyT<=0;
   setThrustSound(flying && !!keys.ArrowUp && ship.fuel>0);
   if(flying && ship.fuel<20 && ship.fuel>0 && stageTimer%45===0) sfx('alarm');
   actionPressed=false;
+}
+function postFX(){
+  if(!crtOn) return;
+  g1.clearRect(0,0,glow1.width,glow1.height);g1.drawImage(c,0,0,glow1.width,glow1.height);
+  g2.clearRect(0,0,glow2.width,glow2.height);g2.drawImage(glow1,0,0,glow2.width,glow2.height);
+  ctx.save();ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.globalCompositeOperation='lighter';
+  ctx.globalAlpha=.55;ctx.drawImage(glow1,0,0,W,H);
+  ctx.globalAlpha=.6;ctx.drawImage(glow2,0,0,W,H);
+  ctx.restore();
 }
 function draw(){
   ctx.save();
@@ -1227,10 +1358,13 @@ function draw(){
   else if(state==='surface')drawSurface();
   else if(state==='upgrade')drawUpgrade();
   else if(state==='exploding')drawExplosion();
+  else if(state==='initials')drawInitials();
   else if(state==='gameover')drawEnd(false);
   else if(state==='win')drawEnd(true);
-  if(!['title','gameover','win','upgrade','exploding'].includes(state))drawMessage();
+  if(!isMenu()){drawPopups();drawMessage();drawReady();}
   ctx.restore();
+  if(flash){ctx.fillStyle='rgba(255,255,255,'+(flash*.3)+')';ctx.fillRect(0,0,W,H)}
+  postFX();
 }
 const STEP=1000/60; let acc=0,last=performance.now();
 function loop(t){
